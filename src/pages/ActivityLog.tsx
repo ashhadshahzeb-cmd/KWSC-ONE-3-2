@@ -45,7 +45,8 @@ import {
   Lock,
   Siren,
   TriangleAlert,
-  ServerCrash
+  ServerCrash,
+  Users
 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -456,6 +457,27 @@ export default function ActivityLog() {
       setSelectedLogImage(null);
     }
   }, [selectedLog]);
+  const extractVendorDetails = (receivedFrom?: string, explicitVendorNo?: string) => {
+    const vNo = (explicitVendorNo || "").trim();
+    if (!receivedFrom) return { name: "", vendorNo: vNo };
+    const str = receivedFrom.trim();
+    const parenMatch = str.match(/^(.*?)\s*\(([^)]+)\)$/);
+    if (parenMatch) {
+      return {
+        name: parenMatch[1].trim(),
+        vendorNo: vNo || parenMatch[2].trim()
+      };
+    }
+    const vMatch = str.match(/vendor\s*(?:#|no\.?|id)?\s*:?\s*([A-Za-z0-9\-_]+)/i);
+    if (vMatch) {
+      return {
+        name: str.replace(vMatch[0], "").trim(),
+        vendorNo: vNo || vMatch[1].trim()
+      };
+    }
+    return { name: str, vendorNo: vNo };
+  };
+
   const [qrPrintModal, setQrPrintModal] = useState<{
     diary: string;
     receiving: string;
@@ -464,6 +486,8 @@ export default function ActivityLog() {
     print_date: string;
     mark_to?: string;
     additional_mark_to?: string;
+    received_from?: string;
+    vendor_number?: string;
   } | null>(null);
   const [isPrintingQR, setIsPrintingQR] = useState(false);
   const [isDuplicatePrint, setIsDuplicatePrint] = useState(false);
@@ -689,6 +713,19 @@ export default function ActivityLog() {
       log.details?.print_date ||
       new Date().toISOString().split('T')[0];
 
+    const received_from =
+      log.details?.received_from ||
+      log.details?.after?.received_from ||
+      log.details?.before?.received_from ||
+      '';
+
+    const vendor_number =
+      log.details?.vendor_number ||
+      log.details?.after?.vendor_number ||
+      log.details?.before?.vendor_number ||
+      extractVendorDetails(received_from).vendorNo ||
+      '';
+
     setQrPrintModal({
       diary,
       receiving,
@@ -697,6 +734,8 @@ export default function ActivityLog() {
       print_date,
       mark_to,
       additional_mark_to,
+      received_from,
+      vendor_number,
     });
   };
 
@@ -1344,12 +1383,12 @@ export default function ActivityLog() {
       <Dialog open={!!qrPrintModal} onOpenChange={(open) => !open && setQrPrintModal(null)}>
         <DialogContent className="sm:max-w-[450px] p-0 overflow-hidden rounded-[36px] border border-slate-200 bg-white shadow-xl">
           {qrPrintModal && (
-            <div className={`w-full h-full qr-ticket-printable bg-white print:bg-white ${isPrintingQR ? 'overflow-visible max-h-none' : 'max-h-[90vh] overflow-y-auto'} overflow-x-hidden font-sans pb-6 relative`}>
+            <div className={`w-full h-full qr-ticket-printable bg-white print:bg-white ${isPrintingQR ? 'overflow-visible max-h-none' : 'max-h-[90vh] overflow-y-auto'} overflow-x-hidden font-mono pb-6 relative`}>
               {/* DUPLICATE Watermark for QR Ticket */}
               {isDuplicatePrint && (
                 <div className="hidden print:flex absolute inset-0 items-center justify-center pointer-events-none z-[100] overflow-hidden select-none">
                   <div 
-                    className="text-[90px] font-black uppercase text-red-500/20 -rotate-45 select-none"
+                    className="text-[90px] font-black uppercase text-red-500/20 -rotate-45 select-none font-mono"
                     style={{ WebkitTextStroke: '1.5px rgba(239, 68, 68, 0.4)' }}
                   >
                     DUPLICATE
@@ -1377,8 +1416,8 @@ export default function ActivityLog() {
                 </div>
 
                 <div className="relative text-center space-y-1">
-                  <h1 className="text-white print:text-white text-xl font-black tracking-tight uppercase" style={{ color: '#ffffff' }}>Verified Tracking</h1>
-                  <p className="text-blue-100 print:text-white text-[10px] font-bold uppercase tracking-widest" style={{ color: '#ffffff' }}>Karachi Water Corporation</p>
+                  <h1 className="text-white print:text-white text-xl font-black tracking-tight uppercase font-mono" style={{ color: '#ffffff' }}>Verified Tracking</h1>
+                  <p className="text-blue-100 print:text-white text-[11px] font-bold uppercase tracking-widest font-mono" style={{ color: '#ffffff' }}>Karachi Water Corporation</p>
                 </div>
               </div>
 
@@ -1387,37 +1426,69 @@ export default function ActivityLog() {
                 <Card className="rounded-[28px] border border-slate-200 shadow-none overflow-hidden bg-white print:border-none print:shadow-none">
                   <div className="p-1 bg-[#1e3a8a] print:bg-[#1e3a8a]"></div>
                   <CardContent className="pt-5 space-y-5 print:pt-4">
+                    {(() => {
+                      const vendorDetails = extractVendorDetails(qrPrintModal.received_from, qrPrintModal.vendor_number);
+                      const effectiveVendorNo = vendorDetails.vendorNo;
+                      const effectiveVendorName = vendorDetails.name;
+                      return (
+                        <>
+                          {/* Tracking Numbers */}
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="bg-blue-50/70 dark:bg-blue-950/70 print:bg-slate-50 rounded-2xl p-3.5 text-center border-2 border-blue-200 dark:border-blue-700/60 print:border-slate-300 relative group overflow-hidden">
+                              <span className="text-xs font-black text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] uppercase tracking-wider block font-mono">CFO Diary</span>
+                              <p className="text-base font-black text-slate-900 dark:text-white print:text-black font-mono mt-1 tracking-tight truncate">{qrPrintModal.diary || '—'}</p>
+                            </div>
+                            <div className="bg-emerald-50/70 dark:bg-emerald-950/70 print:bg-slate-50 rounded-2xl p-3.5 text-center border-2 border-emerald-200 dark:border-emerald-700/60 print:border-slate-300 relative group overflow-hidden">
+                              <span className="text-xs font-black text-emerald-700 dark:text-emerald-300 print:text-emerald-800 uppercase tracking-wider block font-mono">Receiving No</span>
+                              <p className="text-base font-black text-slate-900 dark:text-white print:text-black font-mono mt-1 tracking-tight truncate">{qrPrintModal.receiving || '—'}</p>
+                            </div>
+                          </div>
 
-                    {/* Tracking Numbers */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-blue-50/70 dark:bg-blue-950/70 print:bg-slate-50 rounded-2xl p-3.5 text-center border-2 border-blue-200 dark:border-blue-700/60 print:border-slate-300 relative group overflow-hidden">
-                        <span className="text-[10px] font-black text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] uppercase tracking-wider block">CFO Diary</span>
-                        <p className="text-sm font-black text-slate-900 dark:text-white print:text-black font-mono mt-1 tracking-tight">{qrPrintModal.diary || '—'}</p>
-                      </div>
-                      <div className="bg-emerald-50/70 dark:bg-emerald-950/70 print:bg-slate-50 rounded-2xl p-3.5 text-center border-2 border-emerald-200 dark:border-emerald-700/60 print:border-slate-300 relative group overflow-hidden">
-                        <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-300 print:text-emerald-800 uppercase tracking-wider block">Receiving No</span>
-                        <p className="text-sm font-black text-slate-900 dark:text-white print:text-black font-mono mt-1 tracking-tight">{qrPrintModal.receiving || '—'}</p>
-                      </div>
-                    </div>
+                          {/* File Info */}
+                          <div className="space-y-3.5 pt-3 border-t border-slate-100 dark:border-slate-800 print:border-slate-200">
+                            {/* 1. Subject */}
+                            <div className="flex items-start gap-3">
+                              <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-900/40 text-[#1e3a8a] dark:text-sky-300 flex items-center justify-center shrink-0 border border-blue-100 dark:border-blue-700 print:border-slate-200">
+                                <FileText className="w-4 h-4 text-[#1e3a8a] dark:text-sky-300" />
+                              </div>
+                              <div>
+                                <span className="text-xs font-black text-slate-500 dark:text-slate-300 uppercase tracking-wider block font-mono">Subject</span>
+                                <p className="text-base font-black font-mono text-slate-900 dark:text-white print:text-black leading-snug mt-0.5 tracking-tight">{qrPrintModal.subject || "Subject Details"}</p>
+                              </div>
+                            </div>
 
-                    {/* File Info */}
-                    <div className="space-y-3.5 pt-3 border-t border-slate-100 dark:border-slate-800 print:border-slate-200">
-                      <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-900/40 text-[#1e3a8a] dark:text-sky-300 flex items-center justify-center shrink-0 border border-blue-100 dark:border-blue-700 print:border-slate-200">
-                          <FileText className="w-4 h-4 text-[#1e3a8a] dark:text-sky-300" />
-                        </div>
-                        <div>
-                          <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Subject</span>
-                          <p className="text-xs font-black text-slate-900 dark:text-white print:text-black leading-snug">{qrPrintModal.subject || "Subject Details"}</p>
-                        </div>
-                      </div>
+                            {/* 2. Vendor Number right under Subject */}
+                            {(effectiveVendorNo || (effectiveVendorName && effectiveVendorName !== effectiveVendorNo)) && (
+                              <div className="flex items-start gap-3">
+                                <div className="w-8 h-8 rounded-xl bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 flex items-center justify-center shrink-0 border border-purple-100 dark:border-purple-700 print:border-slate-200">
+                                  <Users className="w-4 h-4 text-purple-700 dark:text-purple-300" />
+                                </div>
+                                <div>
+                                  <span className="text-xs font-black text-purple-700 dark:text-purple-400 uppercase tracking-wider block font-mono">Vendor Number</span>
+                                  <p className="text-base font-black font-mono text-purple-950 dark:text-purple-200 print:text-black leading-snug mt-0.5 tracking-tight">
+                                    {effectiveVendorNo ? (
+                                      <>
+                                        <span>#{effectiveVendorNo}</span>
+                                        {effectiveVendorName && (
+                                          <span className="text-xs font-bold text-slate-600 dark:text-slate-300 print:text-slate-700 block mt-0.5 font-mono">
+                                            ({effectiveVendorName})
+                                          </span>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <span>{effectiveVendorName}</span>
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+                            )}
                       <div className="flex items-start gap-3">
                         <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-900/40 text-amber-600 dark:text-amber-300 flex items-center justify-center shrink-0 border border-amber-100 dark:border-amber-700 print:border-slate-200">
                           <Calendar className="w-4 h-4 text-amber-600 dark:text-amber-300" />
                         </div>
                         <div>
-                          <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Created Date</span>
-                          <p className="text-xs font-black text-amber-700 dark:text-amber-300 print:text-amber-800 font-mono tracking-tight">{safeFormatDate(qrPrintModal.created_date)}</p>
+                          <span className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wide font-mono">Created Date</span>
+                          <p className="text-sm font-bold font-mono text-amber-700 dark:text-amber-300 print:text-amber-800 tracking-tight mt-0.5">{safeFormatDate(qrPrintModal.created_date)}</p>
                         </div>
                       </div>
                       <div className="flex items-start gap-3">
@@ -1425,8 +1496,8 @@ export default function ActivityLog() {
                           <Clock className="w-4 h-4 text-emerald-600 dark:text-emerald-300" />
                         </div>
                         <div>
-                          <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Printed Date</span>
-                          <p className="text-xs font-black text-emerald-700 dark:text-emerald-300 print:text-emerald-800 font-mono tracking-tight">
+                          <span className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wide font-mono">Printed Date</span>
+                          <p className="text-sm font-bold font-mono text-emerald-700 dark:text-emerald-300 print:text-emerald-800 tracking-tight mt-0.5">
                             {safeFormatDate(qrPrintModal.print_date)}
                           </p>
                         </div>
@@ -1436,8 +1507,8 @@ export default function ActivityLog() {
                           <Building2 className="w-4 h-4 text-[#1e3a8a]" />
                         </div>
                         <div>
-                          <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Current Section</span>
-                          <p className="text-xs font-black text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] uppercase tracking-tight">{getSectionName(qrPrintModal.mark_to)}</p>
+                          <span className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wide font-mono">Current Section</span>
+                          <p className="text-sm font-bold font-mono text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] uppercase tracking-tight mt-0.5">{getSectionName(qrPrintModal.mark_to)}</p>
                         </div>
                       </div>
                       {qrPrintModal.additional_mark_to && (
@@ -1446,8 +1517,8 @@ export default function ActivityLog() {
                             <Building2 className="w-4 h-4 text-purple-600" />
                           </div>
                           <div>
-                            <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Additional Mark To</span>
-                            <p className="text-xs font-black text-purple-700 dark:text-purple-300 print:text-purple-800 uppercase tracking-tight">{getSectionName(qrPrintModal.additional_mark_to)}</p>
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wide font-mono">Additional Mark To</span>
+                            <p className="text-sm font-bold font-mono text-purple-700 dark:text-purple-300 print:text-purple-800 uppercase tracking-tight mt-0.5">{getSectionName(qrPrintModal.additional_mark_to)}</p>
                           </div>
                         </div>
                       )}
@@ -1474,13 +1545,19 @@ export default function ActivityLog() {
                             style={{ width: '120px', height: '120px', display: 'block' }}
                           />
                         </div>
-                        <span className="text-[8.5px] font-black mt-2 uppercase text-center block" style={{ color: '#0f172a' }}>Prepared by Engineer Tariq Zamir</span>
+                        <span className="text-[10px] font-bold font-mono mt-2 uppercase text-center block" style={{ color: '#0f172a' }}>Prepared by Engineer Tariq Zamir</span>
                       </div>
                       <div>
-                        <p className="text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] text-xs font-black uppercase tracking-widest">Scan to Track Live</p>
-                        <p className="text-slate-800 dark:text-white print:text-black text-xs font-black tracking-tight mt-0.5 font-mono">CODE: {qrPrintModal.receiving}</p>
+                        <p className="text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] text-sm font-black uppercase tracking-widest font-mono">Scan to Track Live</p>
+                        <p className="text-slate-800 dark:text-white print:text-black text-sm font-black tracking-tight mt-0.5 font-mono">CODE: {qrPrintModal.receiving}</p>
+                        {effectiveVendorNo && (
+                          <p className="text-purple-800 dark:text-purple-300 print:text-black text-xs font-black tracking-tight mt-0.5 font-mono">VENDOR: #{effectiveVendorNo}</p>
+                        )}
                       </div>
                     </div>
+                  </>
+                );
+              })()}
 
                     <div className="pt-2 flex flex-col gap-2 justify-center">
                       <div className="no-print space-y-2 mb-2 bg-slate-500/5 p-3 rounded-lg border border-slate-500/20">

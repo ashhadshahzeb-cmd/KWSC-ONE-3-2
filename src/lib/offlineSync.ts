@@ -71,10 +71,15 @@ export async function processOfflineQueue() {
       let error = null;
 
       if (mutation.action === 'INSERT') {
-        const { is_dirty, deleted_locally, file_image, file_images, ...cleanPayload } = mutation.payload;
+        const { is_dirty, deleted_locally, ...cleanPayload } = mutation.payload;
+        
+        // Ensure file_images is a valid array for the JSONB column
+        if (!Array.isArray(cleanPayload.file_images)) cleanPayload.file_images = [];
+        if (!cleanPayload.file_image) cleanPayload.file_image = null;
+
         let { error: err } = await supabase.from(mutation.table as any).insert(cleanPayload);
         
-        // If it fails because columns don't exist (code 42703 or PGRST204), retry without them
+        // If it fails because other optional columns don't exist (code 42703 or PGRST204), retry without them
         if (err && (err.code === '42703' || err.code === 'PGRST204')) {
           const { additional_mark_to, status, ...safePayload } = cleanPayload as any;
           const retry = await supabase.from(mutation.table as any).insert(safePayload);
@@ -83,9 +88,14 @@ export async function processOfflineQueue() {
         
         error = err;
       } else if (mutation.action === 'UPDATE') {
-        const { id, is_dirty, deleted_locally, file_image, file_images, ...updateData } = mutation.payload;
+        const { id, is_dirty, deleted_locally, ...updateData } = mutation.payload;
         // Specifically for file_tracking_records, we might update by receiving_number if id is not present but usually id is present
         const matchField = id ? { id } : { receiving_number: updateData.receiving_number };
+
+        // Preserve file_images for the JSONB column
+        if (!Array.isArray(updateData.file_images)) updateData.file_images = [];
+        if (!updateData.file_image) updateData.file_image = null;
+
         let { error: err } = await supabase.from(mutation.table as any).update(updateData).match(matchField);
         
         if (err && (err.code === '42703' || err.code === 'PGRST204')) {
@@ -144,8 +154,12 @@ export async function syncOrphanedDirtyRecords(db: any) {
       // Check if this record is already in the queue to avoid duplicates
       const inQueue = queue.some(m => m.action === 'INSERT' && m.payload.id === record.id);
       if (!inQueue) {
-        // Remove internal fields before sending to Supabase
-        const { is_dirty, deleted_locally, file_image, file_images, ...safeRecord } = record;
+        // Remove only local-only internal fields before sending to Supabase
+        // Keep file_images and file_image — they map to real DB columns
+        const { is_dirty, deleted_locally, ...safeRecord } = record;
+        // Ensure file_images is a valid array for the JSONB column
+        if (!Array.isArray(safeRecord.file_images)) safeRecord.file_images = [];
+        if (!safeRecord.file_image) safeRecord.file_image = null;
         // It's orphaned, add it to the queue
         addToOfflineQueue('file_tracking_records', 'INSERT', safeRecord);
         recoveredCount++;

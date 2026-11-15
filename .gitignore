@@ -47,3 +47,7 @@ whatsapp-service/.wwebjs_cache/
 *google-service-account.json
 service-account.json
 whatsapp-service/google-service-account.json
+
+# Exported CSVs
+*Contractor_Entries*.csv
+public/*Contractor_Entries*.csv

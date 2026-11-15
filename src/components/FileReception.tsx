@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Upload, FileImage, ShieldCheck, CheckCircle2, Clock, Trash2, RefreshCw, Eye } from "lucide-react";
+import { QRCodeCanvas } from "qrcode.react";
 import { useAppConfig } from "@/hooks/useAppConfig";
 import { useSyncManager } from "@/hooks/useSyncManager";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +33,46 @@ export default function FileReception() {
   const [mobileUploadSessionId, setMobileUploadSessionId] = useState<string>("");
   const [showMobileUploadQR, setShowMobileUploadQR] = useState(false);
   const [isMobileListening, setIsMobileListening] = useState(false);
+  const [serverNetworkIp, setServerNetworkIp] = useState("192.168.18.139");
+
+  useEffect(() => {
+    fetch('/api/network-ip')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.ip && data.ip !== 'localhost') {
+          setServerNetworkIp(data.ip);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Poll local mobile upload endpoint while QR modal is active
+  useEffect(() => {
+    if (!showMobileUploadQR || !mobileUploadSessionId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/mobile-upload/${mobileUploadSessionId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.images) && data.images.length > 0) {
+            setFileImages(prev => {
+              const newImgs = data.images.filter((img: string) => !prev.includes(img));
+              if (newImgs.length === 0) return prev;
+              const updated = [...prev, ...newImgs];
+              setFileImage(updated[0] || "");
+              toast.success(`${newImgs.length} photo(s) received from mobile!`);
+              return updated;
+            });
+          }
+        }
+      } catch (e) {
+        // silent polling
+      }
+    }, 1200);
+
+    return () => clearInterval(interval);
+  }, [showMobileUploadQR, mobileUploadSessionId]);
 
   // Data State
   const [pendingFiles, setPendingFiles] = useState<any[]>([]);
@@ -356,23 +397,30 @@ export default function FileReception() {
                     </Button>
                   </div>
 
-                  {showMobileUploadQR && (
-                    <div className="p-4 bg-white rounded-xl flex flex-col items-center justify-center gap-4">
-                      <img 
-                        src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(window.location.origin + '/mobile-upload/' + mobileUploadSessionId)}`}
-                        alt="QR Code"
-                        className="w-[160px] h-[160px]"
-                      />
-                      <p className="text-xs text-black font-medium text-center">Scan with mobile to take or select multiple photos</p>
-                      {fileImages.length > 0 && (
-                        <span className="text-xs font-bold text-teal-600">✓ {fileImages.length} photo(s) received</span>
-                      )}
-                      <Button size="sm" variant="outline" className="w-full text-black border-black/20" onClick={() => {
-                        setShowMobileUploadQR(false);
-                        setIsMobileListening(false);
-                      }}>Done / Close</Button>
-                    </div>
-                  )}
+                  {showMobileUploadQR && (() => {
+                    const mobileBaseUrl = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+                      ? `${window.location.protocol}//${serverNetworkIp}:8080`
+                      : window.location.origin;
+                    const mobileUploadUrl = `${mobileBaseUrl}/mobile-upload/${mobileUploadSessionId}`;
+                    return (
+                      <div className="p-4 bg-white rounded-xl flex flex-col items-center justify-center gap-4">
+                        <QRCodeCanvas 
+                          value={mobileUploadUrl}
+                          size={160}
+                          level="M"
+                        />
+                        <p className="text-xs text-black font-medium text-center">Scan with mobile to take or select multiple photos</p>
+                        <p className="text-[10px] text-zinc-500 font-mono break-all">{mobileUploadUrl}</p>
+                        {fileImages.length > 0 && (
+                          <span className="text-xs font-bold text-teal-600">✓ {fileImages.length} photo(s) received</span>
+                        )}
+                        <Button size="sm" variant="outline" className="w-full text-black border-black/20" onClick={() => {
+                          setShowMobileUploadQR(false);
+                          setIsMobileListening(false);
+                        }}>Done / Close</Button>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
 

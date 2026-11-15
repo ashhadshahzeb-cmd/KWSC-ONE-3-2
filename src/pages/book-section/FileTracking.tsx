@@ -298,6 +298,46 @@ export default function FileTracking() {
   const [mobileUploadSessionId, setMobileUploadSessionId] = useState<string>("");
   const [showMobileUploadQR, setShowMobileUploadQR] = useState(false);
   const [isMobileListening, setIsMobileListening] = useState(false);
+  const [serverNetworkIp, setServerNetworkIp] = useState("192.168.18.139");
+
+  useEffect(() => {
+    fetch('/api/network-ip')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.ip && data.ip !== 'localhost') {
+          setServerNetworkIp(data.ip);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Poll local mobile upload endpoint while QR modal is active
+  useEffect(() => {
+    if (!showMobileUploadQR || !mobileUploadSessionId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/mobile-upload/${mobileUploadSessionId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.images) && data.images.length > 0) {
+            setFileImages(prev => {
+              const newImgs = data.images.filter((img: string) => !prev.includes(img));
+              if (newImgs.length === 0) return prev;
+              const updated = [...prev, ...newImgs];
+              setFileImage(updated[0] || "");
+              toast.success(`${newImgs.length} photo(s) received from mobile!`);
+              return updated;
+            });
+          }
+        }
+      } catch (e) {
+        // silent polling
+      }
+    }, 1200);
+
+    return () => clearInterval(interval);
+  }, [showMobileUploadQR, mobileUploadSessionId]);
   const [formData, setFormData] = useState({
     cfo_diary_number: `CFO-${new Date().getFullYear()}-${String(Math.floor(1 + Math.random() * 9999)).padStart(4, '0')}`,
     inward_date: getLocalDateString(),
@@ -327,6 +367,7 @@ export default function FileTracking() {
     handover_person_name: "",
     file_purpose: "",
     budget_code: "",
+    vendor_number: "",
   });
 
   const [pendingFilesList, setPendingFilesList] = useState<any[]>([]);
@@ -374,6 +415,14 @@ export default function FileTracking() {
   const [showEmpSuggestions, setShowEmpSuggestions] = useState(false);
   const [selectedEmpProfile, setSelectedEmpProfile] = useState<any>(null);
   const [isSearchingEmp, setIsSearchingEmp] = useState(false);
+
+  // Vendor category & suggestions state for File Registration form
+  const [vendorCategory, setVendorCategory] = useState<"contractor" | "employee">("contractor");
+  const [vendorSearchInput, setVendorSearchInput] = useState("");
+  const [selectedVendorInfo, setSelectedVendorInfo] = useState<any>(null);
+  const [vendorSuggestions, setVendorSuggestions] = useState<any[]>([]);
+  const [showVendorSuggestions, setShowVendorSuggestions] = useState(false);
+  const [isSearchingVendor, setIsSearchingVendor] = useState(false);
 
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [recordToDelete, setRecordToDelete] = useState<string | null>(null);
@@ -539,6 +588,28 @@ export default function FileTracking() {
   const [isEditingMode, setIsEditingMode] = useState(false);
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
 
+  // Helper to extract vendor name and vendor number from received_from or explicit fields
+  const extractVendorDetails = (receivedFrom?: string, explicitVendorNo?: string) => {
+    const vNo = (explicitVendorNo || "").trim();
+    if (!receivedFrom) return { name: "", vendorNo: vNo };
+    const str = receivedFrom.trim();
+    const parenMatch = str.match(/^(.*?)\s*\(([^)]+)\)$/);
+    if (parenMatch) {
+      return {
+        name: parenMatch[1].trim(),
+        vendorNo: vNo || parenMatch[2].trim()
+      };
+    }
+    const vMatch = str.match(/vendor\s*(?:#|no\.?|id)?\s*:?\s*([A-Za-z0-9\-_]+)/i);
+    if (vMatch) {
+      return {
+        name: str.replace(vMatch[0], "").trim(),
+        vendorNo: vNo || vMatch[1].trim()
+      };
+    }
+    return { name: str, vendorNo: vNo };
+  };
+
   // Build a complete formData object from a record so NO field is ever lost during edit
   const buildFormDataFromRecord = (record: any) => ({
     cfo_diary_number: record.cfo_diary_number || "",
@@ -546,6 +617,7 @@ export default function FileTracking() {
     registration_date: record.created_at ? getLocalDateString(record.created_at) : getLocalDateString(),
     print_date: record.print_date || (record.created_at ? getLocalDateString(record.created_at) : getLocalDateString()),
     received_from: record.received_from || "",
+    vendor_number: record.vendor_number || extractVendorDetails(record.received_from).vendorNo || "",
     receiving_number: record.receiving_number || "",
     mainCategory: record.mainCategory || record.main_category || "",
     subCategory: record.subCategory || record.sub_category || "",
@@ -885,7 +957,7 @@ export default function FileTracking() {
         <td>${i + 1}</td>
         <td><strong>${r.cfo_diary_number || '---'}</strong><br/><span style="font-size:9px;color:#666">${r.receiving_number || ''}</span></td>
         <td>${r.inward_date ? safeFormatDate(r.inward_date) : '---'}</td>
-        <td style="max-width:160px">${r.subject || '---'}</td>
+        <td style="max-width:220px; word-break: break-word;"><strong>${r.subject || r.file_purpose || r.remarks || '---'}</strong></td>
         <td style="text-align:right;white-space:nowrap">${formatCurrency(r.amount || 0)}</td>
         <td>
           <div style="font-weight: bold; text-transform: uppercase; color: #1e40af; font-size:10px;">${mainCatReadable(r.mainCategory || r.main_category)}</div>
@@ -900,7 +972,7 @@ export default function FileTracking() {
         </td>
         <td>${sections.find(s => s.id === r.mark_to)?.name || r.mark_to || '---'}</td>
         <td style="white-space:nowrap">${r.outward_date ? safeFormatDate(r.outward_date) : '---'}</td>
-        <td style="max-width:120px;font-size:9px;color:#555">${r.remarks || '---'}</td>
+        <td style="max-width:120px;font-size:9px;color:#555; word-break: break-word;">${r.remarks || '---'}</td>
       </tr>
     `).join("");
 
@@ -989,7 +1061,11 @@ export default function FileTracking() {
             <div class="sig-box">CFO / Administrator</div>
           </div>
           <script>
-            window.onload = function() { window.print(); window.close(); };
+            window.onload = function() {
+              setTimeout(function() {
+                window.print();
+              }, 400);
+            };
           </script>
         </body>
       </html>
@@ -1029,7 +1105,7 @@ export default function FileTracking() {
   const [isJourneyMapOpen, setIsJourneyMapOpen] = useState(false);
   const [isDuplicateDialogOpen, setIsDuplicateDialogOpen] = useState(false);
   const [duplicateFound, setDuplicateFound] = useState<any>(null);
-  const [qrFullScreen, setQrFullScreen] = useState<{ diary: string, receiving: string, print_date?: string, created_date?: string, subject?: string, mark_to?: string, additional_mark_to?: string, history?: any[] } | null>(null);
+  const [qrFullScreen, setQrFullScreen] = useState<{ diary: string, receiving: string, print_date?: string, created_date?: string, subject?: string, mark_to?: string, additional_mark_to?: string, history?: any[], received_from?: string, vendor_number?: string } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
@@ -1125,49 +1201,80 @@ export default function FileTracking() {
   const processAndUploadFile = async (file: File): Promise<string> => {
     return new Promise(async (resolve) => {
       try {
-        const dataUrl = await new Promise<string>((res) => {
+        const dataUrl = await new Promise<string>((res, rej) => {
           const reader = new FileReader();
           reader.onload = (ev) => {
+            const rawDataUrl = ev.target?.result as string;
+            if (!rawDataUrl) { res(''); return; }
             const img = new Image();
-            img.src = ev.target?.result as string;
+            img.src = rawDataUrl;
             img.onload = () => {
-              const canvas = document.createElement('canvas');
-              const MAX = 1200;
-              let w = img.width, h = img.height;
-              if (w > h) {
-                if (w > MAX) { h = Math.round((h * MAX) / w); w = MAX; }
-              } else {
-                if (h > MAX) { w = Math.round((w * MAX) / h); h = MAX; }
-              }
-              canvas.width = w;
-              canvas.height = h;
-              const ctx = canvas.getContext('2d');
-              ctx?.drawImage(img, 0, 0, w, h);
-              res(canvas.toDataURL('image/jpeg', 0.75));
+              try {
+                const canvas = document.createElement('canvas');
+                const MAX = 1200;
+                let w = img.width, h = img.height;
+                if (w > h) {
+                  if (w > MAX) { h = Math.round((h * MAX) / w); w = MAX; }
+                } else {
+                  if (h > MAX) { w = Math.round((w * MAX) / h); h = MAX; }
+                }
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx?.drawImage(img, 0, 0, w, h);
+                res(canvas.toDataURL('image/jpeg', 0.6));
+              } catch { res(rawDataUrl); }
             };
-            img.onerror = () => res(ev.target?.result as string);
+            img.onerror = () => res(rawDataUrl);
           };
+          reader.onerror = () => rej(new Error('FileReader failed'));
           reader.readAsDataURL(file);
         });
 
-        const blob = await fetch(dataUrl).then(r => r.blob());
-        const fileName = `doc_images/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from('file-tracking-images')
-          .upload(fileName, blob, { contentType: 'image/jpeg', upsert: false });
+        if (!dataUrl) { resolve(''); return; }
 
-        if (uploadError) {
-          console.warn('Storage upload failed, falling back to base64:', uploadError.message);
-          resolve(dataUrl);
-        } else {
-          const { data: urlData } = supabase.storage
-            .from('file-tracking-images')
-            .getPublicUrl(fileName);
-          resolve(urlData.publicUrl);
+        // Try uploading to Supabase Storage
+        try {
+          const base64Part = dataUrl.split(',')[1];
+          if (base64Part) {
+            const byteChars = atob(base64Part);
+            const byteArr = new Uint8Array(byteChars.length);
+            for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
+            const blob = new Blob([byteArr], { type: 'image/jpeg' });
+            const fileName = `doc_images/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+            const { error: uploadError } = await supabase.storage
+              .from('file-tracking-images')
+              .upload(fileName, blob, { contentType: 'image/jpeg', upsert: false });
+
+            if (!uploadError) {
+              const { data: urlData } = supabase.storage
+                .from('file-tracking-images')
+                .getPublicUrl(fileName);
+              resolve(urlData.publicUrl);
+              return;
+            }
+          }
+        } catch (storageErr) {
+          console.warn('Storage upload failed:', storageErr);
         }
+
+        // Fallback: return compressed base64 data URL directly
+        console.warn('Using base64 fallback for document photo');
+        resolve(dataUrl);
       } catch (err) {
         console.warn('Image processing error:', err);
-        resolve("");
+        // Last resort: read file as-is
+        try {
+          const fallbackUrl = await new Promise<string>((res) => {
+            const r = new FileReader();
+            r.onload = (e) => res(e.target?.result as string || '');
+            r.onerror = () => res('');
+            r.readAsDataURL(file);
+          });
+          resolve(fallbackUrl);
+        } catch {
+          resolve('');
+        }
       }
     });
   };
@@ -1230,10 +1337,16 @@ export default function FileTracking() {
       handover_person_name: "",
       file_purpose: "",
       budget_code: "",
+      vendor_number: "",
     });
     setSelectedEmpProfile(null);
     setEmpSuggestions([]);
     setShowEmpSuggestions(false);
+    setVendorCategory("contractor");
+    setVendorSearchInput("");
+    setSelectedVendorInfo(null);
+    setVendorSuggestions([]);
+    setShowVendorSuggestions(false);
     setFileImages([]);
     setFileImage("");
     setShowMobileUploadQR(false);
@@ -1269,6 +1382,80 @@ export default function FileTracking() {
     } finally {
       setIsSearchingEmp(false);
     }
+  };
+
+  const handleVendorCategorySearch = async (val: string, category: "contractor" | "employee") => {
+    setVendorSearchInput(val);
+    if (val.trim().length < 2) {
+      setVendorSuggestions([]);
+      setShowVendorSuggestions(false);
+      return;
+    }
+
+    setIsSearchingVendor(true);
+    try {
+      const term = `%${val.trim()}%`;
+      // Query vendors table
+      const { data, error } = await supabase
+        .from('vendors' as any)
+        .select('*')
+        .or(`vendor_name.ilike.${term},cnic_no.ilike.${term},phone_no.ilike.${term}`)
+        .limit(10);
+
+      if (!error && data) {
+        // Filter or rank by category if stored
+        setVendorSuggestions(data);
+        setShowVendorSuggestions(data.length > 0);
+      }
+    } catch (err) {
+      console.error("Vendor search failed:", err);
+    } finally {
+      setIsSearchingVendor(false);
+    }
+  };
+
+  const handleSelectVendor = (vendor: any) => {
+    setSelectedVendorInfo(vendor);
+    
+    // Extract employee_no from vendor if exists
+    let empNo = vendor.employee_no || "";
+    if (!empNo && Array.isArray(vendor.custom_fields)) {
+      const match = vendor.custom_fields.find((f: any) => 
+        (f.name || "").toLowerCase().replace(/[\s_-]/g, "") === "employeeno"
+      );
+      if (match?.value) empNo = match.value;
+    }
+
+    // Extract vendor_number from vendor if exists
+    let vendorNo = vendor.vendor_number || "";
+    if (!vendorNo && Array.isArray(vendor.custom_fields)) {
+      const match = vendor.custom_fields.find((f: any) => {
+        const n = (f.name || "").toLowerCase().replace(/[\s_-]/g, "");
+        return n === "vendornumber" || n === "vendorno" || n === "vendorid";
+      });
+      if (match?.value) vendorNo = match.value;
+    }
+
+    const identifier = vendorCategory === "employee" 
+      ? (empNo || vendor.phone_no || vendor.cnic_no || "")
+      : (vendor.cnic_no || vendor.phone_no || "");
+
+    setVendorSearchInput(identifier);
+
+    // Format received_from: Include Vendor Number if available
+    const payeeName = vendorNo 
+      ? `${vendor.vendor_name} (${vendorNo})` 
+      : (vendor.vendor_name || "");
+
+    setFormData(prev => ({
+      ...prev,
+      received_from: payeeName || prev.received_from,
+      vendor_number: vendorNo || "",
+      // If category is employee, set employee_number as well
+      employee_number: vendorCategory === "employee" ? (empNo || prev.employee_number) : prev.employee_number
+    }));
+    setShowVendorSuggestions(false);
+    toast.success(`Selected ${vendorCategory === "employee" ? "Employee" : "Contractor"}: ${vendor.vendor_name}${vendorNo ? ` [Vendor #${vendorNo}]` : ''}`);
   };
 
   const handleLoadPendingRecord = async () => {
@@ -1438,6 +1625,8 @@ export default function FileTracking() {
           handover_person_name: formData.handover_person_name,
           file_purpose: formData.file_purpose,
           budget_code: formData.budget_code,
+          file_image: fileImages[0] || null,
+          file_images: fileImages.length > 0 ? fileImages : [],
           print_date: formData.print_date || getLocalDateString(),
           created_at: formData.registration_date
             ? safeISOString(formData.registration_date + 'T00:00:00')
@@ -1493,7 +1682,16 @@ export default function FileTracking() {
           toast.success("Record updated successfully! (This record is restricted to Super Admin)");
         } else {
           toast.success(isOnline ? "Record updated successfully!" : "Saved locally. Will sync when online.");
-          setQrFullScreen({ diary: formData.cfo_diary_number, receiving: formData.receiving_number, print_date: formData.print_date, subject: formData.subject, mark_to: formData.mark_to, additional_mark_to: formData.additional_mark_to });
+          setQrFullScreen({
+            diary: formData.cfo_diary_number,
+            receiving: formData.receiving_number,
+            print_date: formData.print_date,
+            subject: formData.subject,
+            mark_to: formData.mark_to,
+            additional_mark_to: formData.additional_mark_to,
+            received_from: formData.received_from,
+            vendor_number: formData.vendor_number || extractVendorDetails(formData.received_from).vendorNo,
+          });
         }
         handleFormReset();
         fetchRecords(0);
@@ -1526,6 +1724,8 @@ export default function FileTracking() {
           additional_mark_to: formData.additional_mark_to,
           handover_person_name: formData.handover_person_name,
           file_purpose: formData.file_purpose,
+          file_image: fileImages[0] || null,
+          file_images: fileImages.length > 0 ? fileImages : [],
           history: newHistory
         };
 
@@ -1569,7 +1769,16 @@ export default function FileTracking() {
           toast.success(`File forwarded to ${formData.mark_to}. (This record is restricted to Super Admin)`);
         } else {
           toast.success(isOnline ? `File forwarded to ${formData.mark_to}` : "Forwarded locally. Will sync when online.");
-          setQrFullScreen({ diary: formData.cfo_diary_number, receiving: formData.receiving_number, print_date: formData.print_date, subject: formData.subject, mark_to: formData.mark_to, additional_mark_to: formData.additional_mark_to });
+          setQrFullScreen({
+            diary: formData.cfo_diary_number,
+            receiving: formData.receiving_number,
+            print_date: formData.print_date,
+            subject: formData.subject,
+            mark_to: formData.mark_to,
+            additional_mark_to: formData.additional_mark_to,
+            received_from: formData.received_from,
+            vendor_number: formData.vendor_number || extractVendorDetails(formData.received_from).vendorNo,
+          });
         }
         handleFormReset();
         fetchRecords(0);
@@ -1627,6 +1836,8 @@ export default function FileTracking() {
           handover_person_name: formData.handover_person_name,
           file_purpose: formData.file_purpose,
           budget_code: formData.budget_code,
+          file_image: fileImages[0] || null,
+          file_images: fileImages.length > 0 ? fileImages : [],
           print_date: formData.print_date || getLocalDateString(),
           history: [snapshot],
           created_at: formData.registration_date
@@ -1688,7 +1899,16 @@ export default function FileTracking() {
           toast.success("File registered successfully. (This record is restricted to Super Admin)");
         } else {
           toast.success(isOnline ? `File registered successfully` : "Registered offline. Will sync when online.");
-          setQrFullScreen({ diary: formData.cfo_diary_number, receiving: formData.receiving_number, print_date: formData.print_date, subject: formData.subject, mark_to: formData.mark_to, additional_mark_to: formData.additional_mark_to });
+          setQrFullScreen({
+            diary: formData.cfo_diary_number,
+            receiving: formData.receiving_number,
+            print_date: formData.print_date,
+            subject: formData.subject,
+            mark_to: formData.mark_to,
+            additional_mark_to: formData.additional_mark_to,
+            received_from: formData.received_from,
+            vendor_number: formData.vendor_number || extractVendorDetails(formData.received_from).vendorNo,
+          });
         }
         handleFormReset();
         fetchRecords(0);
@@ -1938,7 +2158,10 @@ export default function FileTracking() {
 
       // 2. Category & Section Filters
       if (filterCategory !== 'all') mapped = mapped.filter(r => r.mainCategory === filterCategory);
-      if (filterSubCategory !== 'all') mapped = mapped.filter(r => r.subCategory === filterSubCategory);
+      if (filterSubCategory !== 'all') {
+        const normFilter = filterSubCategory.replace(/[-_]/g, '_').toLowerCase();
+        mapped = mapped.filter(r => (r.subCategory || '').replace(/[-_]/g, '_').toLowerCase() === normFilter);
+      }
       if (filterSection !== 'all') mapped = mapped.filter(r => r.mark_to === filterSection);
       if (filterAmount === 'above_2_lac') mapped = mapped.filter(r => (r.amount || 0) > 200000);
       if (filterAmount === 'below_2_lac') mapped = mapped.filter(r => (r.amount || 0) <= 200000);
@@ -2048,8 +2271,8 @@ export default function FileTracking() {
       const from = page * DB_PAGE_SIZE;
       const to = from + DB_PAGE_SIZE - 1;
 
-      // Fast slim column selection for table rows (excludes heavy base64 signature_data & file_image)
-      const tableSelectColumns = 'id, tracking_id, cfo_diary_number, receiving_number, inward_date, outward_date, main_category, sub_category, subject, mark_to, amount, gross_amount, deduction, received_from, employee_number, voucher_code, vehicle_no, print_date, handover_person_name, file_purpose, budget_code, remarks, created_at, date_of_sign, history';
+      // Fast slim column selection for table rows (includes file_image & file_images for doc preview)
+      const tableSelectColumns = 'id, tracking_id, cfo_diary_number, receiving_number, inward_date, outward_date, main_category, sub_category, subject, mark_to, amount, gross_amount, deduction, received_from, employee_number, voucher_code, vehicle_no, print_date, handover_person_name, file_purpose, budget_code, remarks, created_at, date_of_sign, file_image, file_images, history';
 
       let query = supabase
         .from('file_tracking_records' as any)
@@ -2105,9 +2328,11 @@ export default function FileTracking() {
         query = query.eq('main_category', filterCategory);
       }
 
-      // Apply Sub-Category filter
+      // Apply Sub-Category filter (matches both hyphen and underscore formats)
       if (filterSubCategory !== 'all') {
-        query = query.eq('sub_category', filterSubCategory);
+        const subCatHyphen = filterSubCategory.replace(/_/g, '-');
+        const subCatUnderscore = filterSubCategory.replace(/-/g, '_');
+        query = query.in('sub_category', Array.from(new Set([filterSubCategory, subCatHyphen, subCatUnderscore])));
       }
 
       // Apply Section filter
@@ -2172,8 +2397,8 @@ export default function FileTracking() {
         .order('created_at', { ascending: sortOrder === 'asc' })
         .range(from, to);
 
-      // 2. Build the query to get all matching records for statistics & global selection (slim metadata, no heavy histories)
-      let selectFields = 'id, amount, main_category, sub_category, mark_to, created_at';
+      // 2. Build the query to get all matching records for statistics & global selection
+      let selectFields = 'id, amount, main_category, sub_category, mark_to, created_at, subject, cfo_diary_number, receiving_number, inward_date, received_from, outward_date, remarks, employee_number, voucher_code, vehicle_no, file_purpose';
       if (activeTab === 'bulk_modified') {
         selectFields += ', history';
       }
@@ -2217,7 +2442,9 @@ export default function FileTracking() {
       }
 
       if (filterSubCategory !== 'all') {
-        allQuery = allQuery.eq('sub_category', filterSubCategory);
+        const subCatHyphen = filterSubCategory.replace(/_/g, '-');
+        const subCatUnderscore = filterSubCategory.replace(/-/g, '_');
+        allQuery = allQuery.in('sub_category', Array.from(new Set([filterSubCategory, subCatHyphen, subCatUnderscore])));
       }
 
       if (filterSection !== 'all') {
@@ -2439,20 +2666,35 @@ export default function FileTracking() {
   const handleBulkExport = async (format: 'csv' | 'pdf') => {
 
     setIsLoading(true);
-    toast.info(`Fetching all records for ${format.toUpperCase()} export...`);
+    toast.info(`Fetching records for ${format.toUpperCase()} export...`);
     try {
       const sectionName = sections.find(s => s.id === effectiveViewingRole)?.name || effectiveViewingRole;
 
-      let query = supabase
-        .from('file_tracking_records' as any)
-        .select(
-          'id, tracking_id, cfo_diary_number, inward_date, received_from, receiving_number, main_category, sub_category, subject, mark_to, outward_date, remarks, amount, created_at, employee_number, voucher_code, vehicle_no'
-        );
+      let allExportData: any[] = [];
 
-      if (selectedRecordIds.length > 0) {
-        query = query.in('id', selectedRecordIds);
+      // If user specifically hand-picked records (a subset of all matching)
+      if (selectedRecordIds.length > 0 && selectedRecordIds.length < allMatchingRecords.length) {
+        const CHUNK_SIZE = 50;
+        for (let i = 0; i < selectedRecordIds.length; i += CHUNK_SIZE) {
+          const chunk = selectedRecordIds.slice(i, i + CHUNK_SIZE);
+          const { data, error } = await supabase
+            .from('file_tracking_records' as any)
+            .select(
+              'id, tracking_id, cfo_diary_number, inward_date, received_from, receiving_number, main_category, sub_category, subject, mark_to, outward_date, remarks, amount, created_at, employee_number, voucher_code, vehicle_no'
+            )
+            .in('id', chunk);
+
+          if (error) throw error;
+          if (data) allExportData.push(...data);
+        }
       } else {
-        // Apply same filters as fetchRecords
+        // Apply same filters as fetchRecords and fetch all pages
+        let query = supabase
+          .from('file_tracking_records' as any)
+          .select(
+            'id, tracking_id, cfo_diary_number, inward_date, received_from, receiving_number, main_category, sub_category, subject, mark_to, outward_date, remarks, amount, created_at, employee_number, voucher_code, vehicle_no, file_purpose'
+          );
+
         if (activeTab === 'tray' || activeTab === 'timeline') {
           const effectiveRole = effectiveViewingRole;
           if (!(currentRole === 'cfo' || isAdmin)) {
@@ -2472,6 +2714,16 @@ export default function FileTracking() {
           } else {
             query = query.neq('mark_to', 'exited');
           }
+        } else if (activeTab === 'contractor_bills') {
+          query = query.ilike('main_category', '%contractor%').ilike('sub_category', '%contractor%bill%');
+          if (contractorYearFilter !== 'all') {
+            query = query.ilike('cfo_diary_number', `%${contractorYearFilter}%`);
+          }
+          if (contractorMarkToFilter !== 'all') {
+            query = query.eq('mark_to', contractorMarkToFilter);
+          }
+        } else if (activeTab === 'backdate_2026') {
+          query = query.like('cfo_diary_number', '%-2026-%');
         }
 
         if (filterCategory !== 'all') {
@@ -2479,7 +2731,9 @@ export default function FileTracking() {
         }
 
         if (filterSubCategory !== 'all') {
-          query = query.eq('sub_category', filterSubCategory);
+          const subCatHyphen = filterSubCategory.replace(/_/g, '-');
+          const subCatUnderscore = filterSubCategory.replace(/-/g, '_');
+          query = query.in('sub_category', Array.from(new Set([filterSubCategory, subCatHyphen, subCatUnderscore])));
         }
 
         if (filterSection !== 'all') {
@@ -2498,21 +2752,27 @@ export default function FileTracking() {
           let endDate: Date | null = null;
 
           if (reportDateFilter === 'today' || reportDateFilter === 'daily') {
-            startDate = new Date(now.setHours(0, 0, 0, 0));
+            startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+            endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+          } else if (reportDateFilter === 'yesterday') {
+            const yest = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            startDate = new Date(yest.getFullYear(), yest.getMonth(), yest.getDate(), 0, 0, 0, 0);
+            endDate = new Date(yest.getFullYear(), yest.getMonth(), yest.getDate(), 23, 59, 59, 999);
           } else if (reportDateFilter === 'weekly') {
-            startDate = new Date(now.setDate(now.getDate() - 7));
+            startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            startDate.setHours(0, 0, 0, 0);
           } else if (reportDateFilter === 'monthly') {
-            startDate = new Date(now.setMonth(now.getMonth() - 1));
+            startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
           } else if (reportDateFilter === 'yearly') {
-            startDate = new Date(now.setFullYear(now.getFullYear() - 1));
+            startDate = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
           } else if (reportDateFilter === 'custom') {
             if (customFilterStartDate) {
-              startDate = new Date(customFilterStartDate);
-              startDate.setHours(0, 0, 0, 0);
+              const [y, m, d] = customFilterStartDate.split('-').map(Number);
+              startDate = new Date(y, m - 1, d, 0, 0, 0, 0);
             }
             if (customFilterEndDate) {
-              endDate = new Date(customFilterEndDate);
-              endDate.setHours(23, 59, 59, 999);
+              const [y, m, d] = customFilterEndDate.split('-').map(Number);
+              endDate = new Date(y, m - 1, d, 23, 59, 59, 999);
             }
           }
 
@@ -2528,11 +2788,24 @@ export default function FileTracking() {
           const q = `%${debouncedSearchQuery.toLowerCase()}%`;
           query = query.or(`cfo_diary_number.ilike.${q},receiving_number.ilike.${q},subject.ilike.${q},received_from.ilike.${q},tracking_id.ilike.${q}`);
         }
+
+        const BATCH_SIZE = 1000;
+        let from = 0;
+        while (true) {
+          const { data: batchData, error: batchError } = await query
+            .order('created_at', { ascending: sortOrder === 'asc' })
+            .range(from, from + BATCH_SIZE - 1);
+
+          if (batchError) throw batchError;
+          if (!batchData || batchData.length === 0) break;
+
+          allExportData.push(...batchData);
+          if (batchData.length < BATCH_SIZE) break;
+          from += BATCH_SIZE;
+        }
       }
 
-      const { data, error } = await query.order('created_at', { ascending: sortOrder === 'asc' });
-
-      if (error) throw error;
+      const data = allExportData;
 
       if (data && data.length > 0) {
         const mappedData = (data as any[]).map(d => ({
@@ -2825,6 +3098,9 @@ export default function FileTracking() {
       signature_data: "" // Clear signature for new person to sign
     });
     setIsForwardingMode(true);
+    const existingImages = extractRecordImages(file);
+    setFileImages(existingImages);
+    setFileImage(existingImages[0] || "");
     toast.info(`Now processing: ${file.subject}. Review the journey below before signing.`);
   };
 
@@ -2938,7 +3214,9 @@ export default function FileTracking() {
       subject: ticketData?.subject,
       mark_to: ticketData?.mark_to,
       additional_mark_to: ticketData?.additional_mark_to,
-      history: ticketData?.history
+      history: ticketData?.history,
+      received_from: ticketData?.received_from,
+      vendor_number: (ticketData as any)?.vendor_number || extractVendorDetails(ticketData?.received_from).vendorNo,
     });
   };
 
@@ -3532,7 +3810,7 @@ export default function FileTracking() {
                       size="icon"
                       className="h-6 w-6 hover:bg-primary/20 text-primary"
                       title="Export Selected to PDF"
-                      onClick={() => handlePrintFullReport(allMatchingRecords.filter(r => selectedRecordIds.includes(r.id)))}
+                      onClick={() => handleBulkExport('pdf')}
                     >
                       <FileText className="w-3.5 h-3.5" />
                     </Button>
@@ -3541,7 +3819,7 @@ export default function FileTracking() {
                       size="icon"
                       className="h-6 w-6 hover:bg-primary/20 text-primary"
                       title="Export Selected to CSV"
-                      onClick={() => exportToCSV(allMatchingRecords.filter(r => selectedRecordIds.includes(r.id)), "Selected_Files")}
+                      onClick={() => handleBulkExport('csv')}
                     >
                       <Plus className="w-3.5 h-3.5 rotate-45" />
                     </Button>
@@ -4369,7 +4647,9 @@ export default function FileTracking() {
                                 subject: file.subject,
                                 mark_to: file.mark_to,
                                 additional_mark_to: file.additional_mark_to,
-                                history: file.history
+                                history: file.history,
+                                received_from: file.received_from,
+                                vendor_number: (file as any)?.vendor_number || extractVendorDetails(file.received_from).vendorNo,
                               })}
                             >
                               <Printer className="w-3.5 h-3.5" />
@@ -5082,14 +5362,151 @@ export default function FileTracking() {
                 </div>
               )}
 
-              <div className="space-y-2">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Received From Section (Optional)</Label>
-                <Input
-                  placeholder="Department or Section"
-                  value={formData.received_from}
-                  onChange={e => setFormData({ ...formData, received_from: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11"
-                />
+              {/* Vendor Category & Searchable Identifier Section */}
+              <div className="space-y-3 p-3.5 rounded-xl border border-teal-500/20 bg-teal-500/5 dark:bg-teal-950/10 relative">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <Label className="text-xs uppercase font-bold text-teal-600 dark:text-teal-400 flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5" /> Vendor Classification & Details
+                  </Label>
+                  {/* Category Switcher Dropdown */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-muted-foreground uppercase font-bold">Category:</span>
+                    <Select
+                      value={vendorCategory}
+                      onValueChange={(val: "contractor" | "employee") => {
+                        setVendorCategory(val);
+                        setVendorSearchInput("");
+                        setSelectedVendorInfo(null);
+                        setVendorSuggestions([]);
+                        setShowVendorSuggestions(false);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-xs font-bold w-36 bg-black/30 border-teal-500/30 text-white">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="bg-zinc-950 border-white/10">
+                        <SelectItem value="contractor">👷 Contractor</SelectItem>
+                        <SelectItem value="employee">🪪 Employee</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Field 1: Dynamic Identifier Search (CNIC or Employee No) */}
+                  <div className="space-y-1.5 relative">
+                    <Label className="text-[11px] uppercase font-bold text-muted-foreground flex items-center justify-between">
+                      <span>{vendorCategory === "employee" ? "Search Employee Number" : "Search Contractor CNIC"}</span>
+                      {selectedVendorInfo && (
+                        <span className="text-[10px] text-teal-400 font-mono">✓ Verified</span>
+                      )}
+                    </Label>
+                    <div className="relative">
+                      <Input
+                        placeholder={vendorCategory === "employee" ? "Type Employee No (e.g. 1042)..." : "Type CNIC (e.g. 42101-...)"}
+                        value={vendorSearchInput}
+                        onChange={e => handleVendorCategorySearch(e.target.value, vendorCategory)}
+                        onFocus={() => { if (vendorSuggestions.length > 0) setShowVendorSuggestions(true); }}
+                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono text-xs h-10 pr-8"
+                      />
+                      {isSearchingVendor && (
+                        <div className="absolute right-2.5 top-2.5">
+                          <Loader2 className="w-4 h-4 animate-spin text-teal-400" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Suggestions Dropdown for CNIC / Emp No */}
+                    {showVendorSuggestions && vendorSuggestions.length > 0 && (
+                      <div className="absolute z-50 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-lg border border-teal-500/30 bg-[#0f1115]/98 backdrop-blur-xl shadow-2xl p-1 space-y-0.5 scrollbar-thin">
+                        <div className="p-1.5 text-[9px] uppercase font-bold text-teal-400/80 tracking-wider border-b border-white/5 flex items-center justify-between">
+                          <span>Matching {vendorCategory === "employee" ? "Employees" : "Contractors"} ({vendorSuggestions.length})</span>
+                          <span className="text-white/40 text-[9px] lowercase">click to select</span>
+                        </div>
+                        {vendorSuggestions.map((v) => {
+                          const emp = v.employee_no || (Array.isArray(v.custom_fields) && v.custom_fields.find((f: any) => (f.name || "").toLowerCase().includes("employee"))?.value) || "";
+                          const identifier = vendorCategory === "employee" ? (emp || v.phone_no) : v.cnic_no;
+                          return (
+                            <div
+                              key={v.id}
+                              onClick={() => handleSelectVendor(v)}
+                              className="flex flex-col gap-0.5 p-2 rounded-md hover:bg-teal-500/15 cursor-pointer transition-colors text-left border-b border-white/5 last:border-0"
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                                  <Users className="w-3 h-3 text-teal-400" />
+                                  {v.vendor_name}
+                                </span>
+                                {identifier && (
+                                  <span className="text-[10px] font-mono text-teal-300 bg-teal-500/10 px-1 rounded">
+                                    {identifier}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-3 text-[10px] text-muted-foreground font-mono">
+                                {v.phone_no && <span>📞 {v.phone_no}</span>}
+                                {Array.isArray(v.companies) && v.companies.length > 0 && (
+                                  <span className="text-white/60 truncate">🏢 {v.companies.map((c: any) => c.name).filter(Boolean).join(", ")}</span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Field 2: Vendor Name (Auto-populated or Direct Typing) */}
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] uppercase font-bold text-muted-foreground flex items-center justify-between">
+                      <span>Vendor / Payee Name</span>
+                      <span className="text-[10px] text-muted-foreground/60">Editable</span>
+                    </Label>
+                    <Input
+                      placeholder="Vendor Name / Section"
+                      value={formData.received_from}
+                      onChange={e => setFormData({ ...formData, received_from: e.target.value })}
+                      className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold text-xs h-10"
+                    />
+                  </div>
+                </div>
+
+                {/* Vendor Summary Pill if Selected */}
+                {selectedVendorInfo && (() => {
+                  const vNo = selectedVendorInfo.vendor_number || (Array.isArray(selectedVendorInfo.custom_fields) && selectedVendorInfo.custom_fields.find((f: any) => {
+                    const n = (f.name || "").toLowerCase().replace(/[\s_-]/g, "");
+                    return n === "vendornumber" || n === "vendorno" || n === "vendorid";
+                  })?.value) || "";
+                  return (
+                    <div className="p-2 rounded-lg bg-black/30 border border-teal-500/20 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-teal-400">{selectedVendorInfo.vendor_name}</span>
+                        {vNo && (
+                          <Badge variant="outline" className="text-[10px] font-mono bg-amber-500/10 text-amber-400 border-amber-500/30">
+                            Vendor #{vNo}
+                          </Badge>
+                        )}
+                        {selectedVendorInfo.cnic_no && (
+                          <span className="font-mono text-[10px] text-muted-foreground">CNIC: {selectedVendorInfo.cnic_no}</span>
+                        )}
+                        {selectedVendorInfo.phone_no && (
+                          <span className="font-mono text-[10px] text-muted-foreground">Phone: {selectedVendorInfo.phone_no}</span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedVendorInfo(null);
+                          setVendorSearchInput("");
+                          setFormData(prev => ({ ...prev, received_from: "" }));
+                        }}
+                        className="text-[10px] text-rose-400 hover:underline"
+                      >
+                        Clear Selection
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="space-y-2">
@@ -5783,7 +6200,7 @@ export default function FileTracking() {
                 {/* Mobile QR Modal */}
                 {showMobileUploadQR && mobileUploadSessionId && (() => {
                   const mobileBaseUrl = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-                    ? `${window.location.protocol}//172.16.10.52:8080`
+                    ? `${window.location.protocol}//${serverNetworkIp}:8080`
                     : window.location.origin;
                   const mobileUploadUrl = `${mobileBaseUrl}/mobile-upload/${mobileUploadSessionId}`;
                   return (
@@ -5793,11 +6210,12 @@ export default function FileTracking() {
                         <p className="text-xs text-zinc-400">
                           Scan the QR code with your mobile camera to upload <strong>multiple photos</strong> (page-by-page via camera or multiple from gallery).
                         </p>
-                        <div className="flex justify-center">
-                          <img
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(mobileUploadUrl)}`}
-                            alt="QR Code"
-                            className="w-48 h-48 rounded-xl border-4 border-white shadow-xl"
+                        <div className="flex justify-center p-3 bg-white rounded-xl shadow-xl w-fit mx-auto">
+                          <QRCodeCanvas
+                            value={mobileUploadUrl}
+                            size={180}
+                            level="M"
+                            includeMargin={false}
                           />
                         </div>
                         <p className="text-[10px] text-zinc-500 font-mono break-all">
@@ -6403,7 +6821,16 @@ export default function FileTracking() {
                               variant="outline" 
                               size="sm"
                               onClick={() => {
-                                 setQrFullScreen({ diary: file.cfo_diary_number, receiving: file.receiving_number, print_date: file.print_date, subject: file.subject, mark_to: file.mark_to, additional_mark_to: file.additional_mark_to });
+                                 setQrFullScreen({
+                                   diary: file.cfo_diary_number,
+                                   receiving: file.receiving_number,
+                                   print_date: file.print_date,
+                                   subject: file.subject,
+                                   mark_to: file.mark_to,
+                                   additional_mark_to: file.additional_mark_to,
+                                   received_from: file.received_from,
+                                   vendor_number: (file as any)?.vendor_number || extractVendorDetails(file.received_from).vendorNo,
+                                 });
                               }}
                               className="h-8 gap-2 border border-blue-600/30 bg-blue-50/70 text-[#1e3a8a] hover:bg-[#1e3a8a] hover:text-white font-bold text-xs rounded-xl transition-all shadow-xs"
                             >
@@ -6652,13 +7079,17 @@ export default function FileTracking() {
         <DialogContent className="sm:max-w-[450px] p-0 overflow-hidden rounded-[36px] border border-slate-200 bg-white shadow-xl">
           {(() => {
             const ticket = qrFullScreen ? records.find(r => r.cfo_diary_number === qrFullScreen.diary || r.receiving_number === qrFullScreen.receiving) : null;
+            const effectiveReceivedFrom = qrFullScreen?.received_from || ticket?.received_from || "";
+            const vendorDetails = extractVendorDetails(effectiveReceivedFrom, qrFullScreen?.vendor_number || (ticket as any)?.vendor_number);
+            const effectiveVendorNo = vendorDetails.vendorNo;
+            const effectiveVendorName = vendorDetails.name;
             return (
-              <div className={`w-full h-full qr-ticket-printable bg-white print:bg-white ${isPrintingQR ? 'overflow-visible max-h-none' : 'max-h-[90vh] overflow-y-auto'} overflow-x-hidden font-sans pb-6 relative`}>
+              <div className={`w-full h-full qr-ticket-printable bg-white print:bg-white ${isPrintingQR ? 'overflow-visible max-h-none' : 'max-h-[90vh] overflow-y-auto'} overflow-x-hidden font-mono pb-6 relative`}>
                 {/* DUPLICATE Watermark for QR Ticket */}
                 {isDuplicatePrint && (
                   <div className="hidden print:flex absolute inset-0 items-center justify-center pointer-events-none z-[100] overflow-hidden select-none">
                     <div 
-                      className="text-[90px] font-black uppercase text-red-500/20 -rotate-45 select-none"
+                      className="text-[90px] font-black uppercase text-red-500/20 -rotate-45 select-none font-mono"
                       style={{ WebkitTextStroke: '1.5px rgba(239, 68, 68, 0.4)' }}
                     >
                       DUPLICATE
@@ -6686,13 +7117,13 @@ export default function FileTracking() {
                       className="w-full max-w-[280px] bg-white print:bg-white border-2 border-[#1e3a8a] dark:border-sky-400 print:border-[#1e3a8a] p-3 rounded-none shadow-md"
                       style={{ backgroundColor: '#ffffff' }}
                     >
-                      <h1 className="text-slate-900 print:text-black text-sm font-black tracking-widest uppercase" style={{ color: '#0f172a' }}>
+                      <h1 className="text-slate-900 print:text-black text-base font-black tracking-widest uppercase font-mono" style={{ color: '#0f172a' }}>
                         SAP TOKEN
                       </h1>
                       {/* Clean black underline for manual pen entry */}
                       <div className="w-full border-b-2 border-slate-900 print:border-black h-5 mt-1" style={{ borderColor: '#0f172a' }}></div>
                     </div>
-                    <p className="text-blue-100/80 print:text-white text-[9px] font-bold uppercase tracking-widest pt-2" style={{ color: '#ffffff' }}>
+                    <p className="text-blue-100/80 print:text-white text-[11px] font-bold uppercase tracking-widest pt-2 font-mono" style={{ color: '#ffffff' }}>
                       Karachi Water &amp; Sewerage Corporation
                     </p>
                   </div>
@@ -6707,33 +7138,60 @@ export default function FileTracking() {
                       {/* Tracking Numbers */}
                       <div className="grid grid-cols-2 gap-3">
                         <div className="bg-blue-50/70 dark:bg-blue-950/70 print:bg-slate-50 rounded-2xl p-3.5 text-center border-2 border-blue-200 dark:border-blue-700/60 print:border-slate-300 relative group overflow-hidden">
-                          <span className="text-[10px] font-black text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] uppercase tracking-wider block">CFO Diary</span>
-                          <p className="text-sm font-black text-slate-900 dark:text-white print:text-black font-mono mt-1 tracking-tight">{qrFullScreen?.diary || '—'}</p>
+                          <span className="text-xs font-black text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] uppercase tracking-wider block font-mono">CFO Diary</span>
+                          <p className="text-base font-black text-slate-900 dark:text-white print:text-black font-mono mt-1 tracking-tight">{qrFullScreen?.diary || '—'}</p>
                         </div>
                         <div className="bg-emerald-50/70 dark:bg-emerald-950/70 print:bg-slate-50 rounded-2xl p-3.5 text-center border-2 border-emerald-200 dark:border-emerald-700/60 print:border-slate-300 relative group overflow-hidden">
-                          <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-300 print:text-emerald-800 uppercase tracking-wider block">Receiving No</span>
-                          <p className="text-sm font-black text-slate-900 dark:text-white print:text-black font-mono mt-1 tracking-tight">{qrFullScreen?.receiving || '—'}</p>
+                          <span className="text-xs font-black text-emerald-700 dark:text-emerald-300 print:text-emerald-800 uppercase tracking-wider block font-mono">Receiving No</span>
+                          <p className="text-base font-black text-slate-900 dark:text-white print:text-black font-mono mt-1 tracking-tight">{qrFullScreen?.receiving || '—'}</p>
                         </div>
                       </div>
 
                       {/* File Info */}
                       <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800 print:border-slate-200">
+                        {/* 1. Subject */}
                         <div className="flex items-start gap-3">
                           <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-900/40 text-[#1e3a8a] dark:text-sky-300 flex items-center justify-center shrink-0 border border-blue-100 dark:border-blue-700 print:border-slate-200">
                             <FileText className="w-4 h-4 text-[#1e3a8a] dark:text-sky-300" />
                           </div>
                           <div>
-                            <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Subject</span>
-                            <p className="text-xs font-black text-slate-900 dark:text-white print:text-black leading-snug">{qrFullScreen?.subject || ticket?.subject || "Subject Details"}</p>
+                            <span className="text-xs font-black text-slate-500 dark:text-slate-300 uppercase tracking-wider block font-mono">Subject</span>
+                            <p className="text-base font-black font-mono text-slate-900 dark:text-white print:text-black leading-snug mt-0.5 tracking-tight">{qrFullScreen?.subject || ticket?.subject || "Subject Details"}</p>
                           </div>
                         </div>
+
+                        {/* 2. Vendor Number right under Subject */}
+                        {(effectiveVendorNo || (effectiveVendorName && effectiveVendorName !== effectiveVendorNo)) && (
+                          <div className="flex items-start gap-3">
+                            <div className="w-8 h-8 rounded-xl bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 flex items-center justify-center shrink-0 border border-purple-100 dark:border-purple-700 print:border-slate-200">
+                              <Users className="w-4 h-4 text-purple-700 dark:text-purple-300" />
+                            </div>
+                            <div>
+                              <span className="text-xs font-black text-purple-700 dark:text-purple-400 uppercase tracking-wider block font-mono">Vendor Number</span>
+                              <p className="text-base font-black font-mono text-purple-950 dark:text-purple-200 print:text-black leading-snug mt-0.5 tracking-tight">
+                                {effectiveVendorNo ? (
+                                  <>
+                                    <span>#{effectiveVendorNo}</span>
+                                    {effectiveVendorName && (
+                                      <span className="text-xs font-bold text-slate-600 dark:text-slate-300 print:text-slate-700 block mt-0.5 font-mono">
+                                        ({effectiveVendorName})
+                                      </span>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span>{effectiveVendorName}</span>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                        )}
                         <div className="flex items-start gap-3">
                           <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300 flex items-center justify-center shrink-0 border border-emerald-100 dark:border-emerald-700 print:border-slate-200">
                             <Clock className="w-4 h-4 text-emerald-600 dark:text-emerald-300" />
                           </div>
                           <div>
-                            <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Printed Date</span>
-                            <p className="text-xs font-black text-emerald-700 dark:text-emerald-300 print:text-emerald-800 font-mono tracking-tight">
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wide font-mono">Printed Date</span>
+                            <p className="text-sm font-bold font-mono text-emerald-700 dark:text-emerald-300 print:text-emerald-800 tracking-tight mt-0.5">
                               {safeFormatDate(qrFullScreen?.print_date)}
                             </p>
                           </div>
@@ -6744,8 +7202,8 @@ export default function FileTracking() {
                               <Building2 className="w-4 h-4 text-amber-600 dark:text-amber-300" />
                             </div>
                             <div>
-                              <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Previous Section</span>
-                              <p className="text-xs font-black text-slate-800 dark:text-slate-100 print:text-black uppercase tracking-tight">
+                              <span className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wide font-mono">Previous Section</span>
+                              <p className="text-sm font-bold font-mono text-slate-800 dark:text-slate-100 print:text-black uppercase tracking-tight mt-0.5">
                                 {sections.find(s => s.id === qrFullScreen.history!.filter((h: any) => (h.action === 'FORWARD' || h.action === 'FORWARDED') && h.from).slice(-1)[0].from)?.name || qrFullScreen.history!.filter((h: any) => (h.action === 'FORWARD' || h.action === 'FORWARDED') && h.from).slice(-1)[0].from}
                               </p>
                             </div>
@@ -6756,8 +7214,8 @@ export default function FileTracking() {
                             <Building2 className="w-4 h-4 text-[#1e3a8a] dark:text-sky-300" />
                           </div>
                           <div>
-                            <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Current Section</span>
-                            <p className="text-xs font-black text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] uppercase tracking-tight">{qrFullScreen?.mark_to ? (sections.find(s => s.id === qrFullScreen.mark_to)?.name || qrFullScreen.mark_to) : (ticket?.mark_to || "CFO Office")}</p>
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wide font-mono">Current Section</span>
+                            <p className="text-sm font-bold font-mono text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] uppercase tracking-tight mt-0.5">{qrFullScreen?.mark_to ? (sections.find(s => s.id === qrFullScreen.mark_to)?.name || qrFullScreen.mark_to) : (ticket?.mark_to || "CFO Office")}</p>
                           </div>
                         </div>
                         {(qrFullScreen?.additional_mark_to || ticket?.additional_mark_to) && (
@@ -6766,8 +7224,8 @@ export default function FileTracking() {
                               <Building2 className="w-4 h-4 text-purple-600 dark:text-purple-300" />
                             </div>
                             <div>
-                              <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-300 uppercase tracking-wide">Additional Mark To</span>
-                              <p className="text-xs font-black text-purple-700 dark:text-purple-300 print:text-purple-800 uppercase tracking-tight">{qrFullScreen?.additional_mark_to ? (sections.find(s => s.id === qrFullScreen.additional_mark_to)?.name || qrFullScreen.additional_mark_to) : (sections.find(s => s.id === ticket?.additional_mark_to)?.name || ticket?.additional_mark_to)}</p>
+                              <span className="text-xs font-bold text-slate-500 dark:text-slate-300 uppercase tracking-wide font-mono">Additional Mark To</span>
+                              <p className="text-sm font-bold font-mono text-purple-700 dark:text-purple-300 print:text-purple-800 uppercase tracking-tight mt-0.5">{qrFullScreen?.additional_mark_to ? (sections.find(s => s.id === qrFullScreen.additional_mark_to)?.name || qrFullScreen.additional_mark_to) : (sections.find(s => s.id === ticket?.additional_mark_to)?.name || ticket?.additional_mark_to)}</p>
                             </div>
                           </div>
                         )}
@@ -6794,11 +7252,14 @@ export default function FileTracking() {
                               style={{ width: '120px', height: '120px', display: 'block' }}
                             />
                           </div>
-                          <span className="text-[8.5px] font-black mt-2 uppercase text-center block" style={{ color: '#0f172a' }}>Prepared by Engineer Tariq Zamir</span>
+                          <span className="text-[10px] font-bold font-mono mt-2 uppercase text-center block" style={{ color: '#0f172a' }}>Prepared by Engineer Tariq Zamir</span>
                         </div>
                         <div>
-                          <p className="text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] text-xs font-black uppercase tracking-widest">Scan to Track Live</p>
-                          <p className="text-slate-800 dark:text-white print:text-black text-xs font-black tracking-tight mt-0.5 font-mono">CODE: {qrFullScreen?.receiving}</p>
+                          <p className="text-[#1e3a8a] dark:text-sky-300 print:text-[#1e3a8a] text-sm font-black uppercase tracking-widest font-mono">Scan to Track Live</p>
+                          <p className="text-slate-800 dark:text-white print:text-black text-sm font-black tracking-tight mt-0.5 font-mono">CODE: {qrFullScreen?.receiving}</p>
+                          {effectiveVendorNo && (
+                            <p className="text-purple-800 dark:text-purple-300 print:text-black text-xs font-black tracking-tight mt-0.5 font-mono">VENDOR: #{effectiveVendorNo}</p>
+                          )}
                         </div>
                       </div>
 
@@ -7132,9 +7593,20 @@ export default function FileTracking() {
 
                     <div className="space-y-4">
                       <div className="bg-zinc-50 p-3 rounded-md border border-zinc-100">
-                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">Subject</p>
-                        <p className="text-xs font-bold text-zinc-800 leading-tight">{ticket.subject || "Subject Details"}</p>
+                        <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1 font-mono">Subject</p>
+                        <p className="text-sm font-black font-mono text-zinc-900 leading-tight tracking-tight">{ticket.subject || "Subject Details"}</p>
                       </div>
+                      {(() => {
+                        const vDet = extractVendorDetails(ticket.received_from, ticket.vendor_number);
+                        return vDet.vendorNo ? (
+                          <div className="bg-purple-50 p-2.5 rounded-md border border-purple-100 flex items-center justify-between">
+                            <span className="text-[10px] font-black text-purple-700 uppercase tracking-widest font-mono">Vendor No</span>
+                            <span className="text-xs font-black font-mono text-purple-900">
+                              #{vDet.vendorNo} {vDet.name ? `(${vDet.name})` : ''}
+                            </span>
+                          </div>
+                        ) : null;
+                      })()}
                       
                       <div className="grid grid-cols-2 gap-4">
                         <div>

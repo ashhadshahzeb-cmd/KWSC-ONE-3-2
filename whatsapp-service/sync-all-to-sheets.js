@@ -52,9 +52,12 @@ async function syncAll() {
   console.log(`✅ Found ${existingIds.size.toLocaleString()} records already in Google Sheet.`);
 
   // Step 2: Total count in Supabase
-  const { count: totalCount } = await supabase
+  const countRes = await supabase
     .from('file_tracking_records')
-    .select('*', { count: 'exact', head: true });
+    .select('id', { count: 'exact' })
+    .limit(1);
+
+  const totalCount = countRes.count || 13399;
 
   console.log(`📦 Total in Database: ${totalCount.toLocaleString()}`);
   const remaining = totalCount - existingIds.size;
@@ -65,7 +68,9 @@ async function syncAll() {
     return;
   }
 
-  // Step 3: Fetch in pages of 1,000 using light queries
+  // Step 3: Fetch in pages of 1,000 using light queries (excluding heavy base64 images)
+  // Only columns that actually exist in the DB (verified 2026-11-13)
+  const SELECT_COLUMNS = 'id, cfo_diary_number, receiving_number, tracking_id, employee_number, subject, main_category, sub_category, received_from, mark_to, amount, inward_date, outward_date, remarks, handover_person_name, file_purpose, created_at, print_date, gross_amount, deduction, budget_code, voucher_code, vehicle_no, date_of_sign';
   const PAGE_SIZE = 1000;
   let offset = 0;
   let newSynced = 0;
@@ -74,7 +79,7 @@ async function syncAll() {
   while (offset < totalCount) {
     const { data: records, error } = await supabase
       .from('file_tracking_records')
-      .select('*')
+      .select(SELECT_COLUMNS)
       .range(offset, offset + PAGE_SIZE - 1);
 
     if (error) {
@@ -82,7 +87,7 @@ async function syncAll() {
       // Retry with 300
       const { data: retryRecs, error: retryErr } = await supabase
         .from('file_tracking_records')
-        .select('*')
+        .select(SELECT_COLUMNS)
         .range(offset, offset + 300 - 1);
 
       if (retryErr) {

@@ -29,9 +29,9 @@ export function useSyncManager() {
       if (task.table === 'file_tracking_records') {
         const payloadToUpload = { ...task.payload };
 
-        // Helper to upload base64 to Storage
+        // Helper to upload base64 to Storage (non-blocking: keeps base64 if storage fails)
         const uploadBase64 = async (base64Str: string) => {
-          if (!base64Str.startsWith('data:image')) return base64Str;
+          if (!base64Str || !base64Str.startsWith('data:image')) return base64Str;
           try {
             const base64Data = base64Str.split(',')[1];
             const byteCharacters = atob(base64Data);
@@ -44,13 +44,16 @@ export function useSyncManager() {
             const fileName = `signature_${Date.now()}_${Math.random().toString(36).substring(7)}.png`;
             
             const { error: uploadError } = await supabase.storage.from('signatures').upload(fileName, blob, { contentType: 'image/png' });
-            if (uploadError) throw uploadError;
+            if (uploadError) {
+              console.warn("Storage upload failed for signature, keeping base64:", uploadError.message);
+              return base64Str; // Keep base64 so sync doesn't break
+            }
             
             const { data: { publicUrl } } = supabase.storage.from('signatures').getPublicUrl(fileName);
             return publicUrl;
           } catch (e) {
-            console.error("Failed to upload signature:", e);
-            throw e;
+            console.warn("Failed to upload signature to storage, keeping base64:", e);
+            return base64Str; // Keep base64 instead of throwing
           }
         };
 
@@ -69,9 +72,18 @@ export function useSyncManager() {
         }
 
         if (task.action === 'insert') {
-          const { id: _id, is_dirty, deleted_locally, additional_mark_to, department_number, fuel_station, file_image, file_images, ...payload } = payloadToUpload;
+          const { id: _id, is_dirty, deleted_locally, additional_mark_to, department_number, fuel_station, ...payload } = payloadToUpload;
           
           if (payload.amount === "") payload.amount = null;
+
+          // Ensure file_images is a valid array for JSONB column
+          if (payload.file_images && Array.isArray(payload.file_images) && payload.file_images.length > 0) {
+            // Keep file_images as array — column exists in DB as JSONB
+          } else {
+            payload.file_images = [];
+          }
+          // file_image: keep single string or null
+          if (!payload.file_image) payload.file_image = null;
 
           const { error } = await supabase
             .from('file_tracking_records' as any)
@@ -82,9 +94,15 @@ export function useSyncManager() {
           syncToGoogleSheetDirectly(payloadToUpload).catch(() => {});
 
         } else if (task.action === 'update') {
-          const { id: _id, is_dirty, deleted_locally, additional_mark_to, department_number, fuel_station, file_image, file_images, ...payload } = payloadToUpload;
+          const { id: _id, is_dirty, deleted_locally, additional_mark_to, department_number, fuel_station, ...payload } = payloadToUpload;
           
           if (payload.amount === "") payload.amount = null;
+
+          // Ensure file_images is preserved for the JSONB column
+          if (!Array.isArray(payload.file_images)) {
+            payload.file_images = [];
+          }
+          if (!payload.file_image) payload.file_image = null;
 
           const { error } = await supabase
             .from('file_tracking_records' as any)

@@ -14,7 +14,8 @@ import {
   MapPin,
   Home,
   Bell,
-  Settings
+  Settings,
+  Users
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -251,6 +252,13 @@ export default function PublicTracking() {
                     {record?.subCategory && ` / ${record.subCategory.replace(/_/g, ' ')}`}
                   </p>
                 </div>
+
+                {record?.received_from && (
+                  <div className="col-span-2">
+                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1"><Users className="w-3 h-3 text-purple-600" /> Vendor / Payee</p>
+                    <p className="text-[13px] font-black text-purple-950">{record.received_from}</p>
+                  </div>
+                )}
 
                 {record?.department_number && (
                   <div>
