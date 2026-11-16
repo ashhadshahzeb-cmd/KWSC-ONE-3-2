@@ -1675,6 +1675,9 @@ export default function FileTracking() {
           record_id: formData.receiving_number,
         });
 
+        // Instant direct Google Sheet update
+        syncToGoogleSheetDirectly({ ...oldRecord, ...updatePayload, id: editingRecordId }, 'UPDATE').catch(() => {});
+
         const { file_image: _img1, file_images: _imgs1, signature_data: _sig1, ...safeOldRecord } = (oldRecord || {}) as any;
         const { file_image: _img2, file_images: _imgs2, signature_data: _sig2, ...safeUpdateRecord } = updatePayload as any;
         logActivity({
@@ -1761,6 +1764,9 @@ export default function FileTracking() {
           payload: updatePayload,
           record_id: formData.receiving_number,
         });
+
+        // Instant direct Google Sheet update
+        syncToGoogleSheetDirectly({ ...existingRecord, ...updatePayload }, 'UPDATE').catch(() => {});
 
         const { file_image: _imgF1, file_images: _imgsF1, signature_data: _sigF1, ...safeExistRecord } = (existingRecord || {}) as any;
         const { file_image: _imgF2, file_images: _imgsF2, signature_data: _sigF2, ...safeFwdRecord } = updatePayload as any;
@@ -1880,6 +1886,9 @@ export default function FileTracking() {
           payload: newEntry,
           record_id: formData.receiving_number,
         });
+
+        // Instant direct Google Sheet insert
+        syncToGoogleSheetDirectly(newEntry, 'INSERT').catch(() => {});
 
         // Calculate how long the user took to fill the registration form
         const formFillDurationMs = Date.now() - formStartTimeRef.current;
