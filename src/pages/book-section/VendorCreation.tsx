@@ -38,6 +38,25 @@ interface Vendor {
   created_at?: string;
 }
 
+const LOCAL_VENDORS_KEY = 'kwsc_local_vendors_directory';
+
+function getStoredLocalVendors(): Vendor[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_VENDORS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveStoredLocalVendors(vendors: Vendor[]) {
+  try {
+    localStorage.setItem(LOCAL_VENDORS_KEY, JSON.stringify(vendors));
+  } catch (e) {
+    console.error("Failed to save local vendors:", e);
+  }
+}
+
 export default function VendorCreation() {
   // Role Selection State
   const [vendorRole, setVendorRole] = useState<VendorRole>("contractor");
@@ -105,9 +124,14 @@ export default function VendorCreation() {
     return "";
   };
 
-  // Fetch vendors from database
+  // Fetch vendors from database (with offline cache fallback & merge)
   const fetchVendors = async () => {
     setIsLoadingList(true);
+    const localVendors = getStoredLocalVendors();
+    if (localVendors.length > 0) {
+      setVendorsList(localVendors);
+    }
+
     try {
       const { data, error } = await supabase
         .from('vendors' as any)
@@ -115,9 +139,25 @@ export default function VendorCreation() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setVendorsList((data as Vendor[]) || []);
+      const remoteList = (data as Vendor[]) || [];
+      
+      // Merge remote and any locally created ones that haven't synced
+      const mergedMap = new Map<string, Vendor>();
+      remoteList.forEach(v => mergedMap.set(v.id || v.cnic_no || v.phone_no, v));
+      localVendors.forEach(v => {
+        const key = v.id || v.cnic_no || v.phone_no;
+        if (!mergedMap.has(key)) {
+          mergedMap.set(key, v);
+        }
+      });
+      const finalMerged = Array.from(mergedMap.values());
+      setVendorsList(finalMerged);
+      saveStoredLocalVendors(finalMerged);
     } catch (err: any) {
-      console.error("Error loading vendors:", err);
+      console.warn("Supabase load vendors failed, using local offline directory:", err);
+      if (localVendors.length > 0) {
+        setVendorsList(localVendors);
+      }
     } finally {
       setIsLoadingList(false);
     }
@@ -241,27 +281,37 @@ export default function VendorCreation() {
       // If employee -> match by employee_no (via custom_fields/column) or Phone No
       let existingVendor: any = null;
 
-      if (vendorRole === "contractor" && cnicNo.trim()) {
-        const { data } = await supabase
-          .from('vendors' as any)
-          .select('id')
-          .or(`cnic_no.eq.${cnicNo.trim()},phone_no.eq.${phoneNo.trim()}`)
-          .maybeSingle();
-        existingVendor = data;
-      } else {
-        // Employee search by phone first
-        const { data } = await supabase
-          .from('vendors' as any)
-          .select('id, custom_fields')
-          .eq('phone_no', phoneNo.trim())
-          .maybeSingle();
-        existingVendor = data;
+      try {
+        if (vendorRole === "contractor" && cnicNo.trim()) {
+          const { data } = await supabase
+            .from('vendors' as any)
+            .select('id')
+            .or(`cnic_no.eq.${cnicNo.trim()},phone_no.eq.${phoneNo.trim()}`)
+            .maybeSingle();
+          existingVendor = data;
+        } else {
+          // Employee search by phone first
+          const { data } = await supabase
+            .from('vendors' as any)
+            .select('id, custom_fields')
+            .eq('phone_no', phoneNo.trim())
+            .maybeSingle();
+          existingVendor = data;
 
-        // If not found by phone, check loaded vendors list for matching employee_no
-        if (!existingVendor && employeeNo.trim()) {
-          const matched = vendorsList.find(v => getEmployeeNo(v).toLowerCase() === employeeNo.trim().toLowerCase());
-          if (matched) existingVendor = { id: matched.id };
+          // If not found by phone, check loaded vendors list for matching employee_no
+          if (!existingVendor && employeeNo.trim()) {
+            const matched = vendorsList.find(v => getEmployeeNo(v).toLowerCase() === employeeNo.trim().toLowerCase());
+            if (matched) existingVendor = { id: matched.id };
+          }
         }
+      } catch (checkErr) {
+        console.warn("Supabase check existing vendor failed, checking local list:", checkErr);
+        const matched = vendorsList.find(v => 
+          (cnicNo.trim() && v.cnic_no === cnicNo.trim()) ||
+          (phoneNo.trim() && v.phone_no === phoneNo.trim()) ||
+          (employeeNo.trim() && getEmployeeNo(v).toLowerCase() === employeeNo.trim().toLowerCase())
+        );
+        if (matched) existingVendor = { id: matched.id };
       }
 
       const cleanedCompanies = companies.filter(c => c.name.trim() !== "");
@@ -300,41 +350,69 @@ export default function VendorCreation() {
         vendor_number: vendorNumber.trim() || null
       };
 
-      let error: any = null;
+      // Save locally to offline cache immediately
+      const savedVendorObject: Vendor = {
+        id: existingVendor?.id || ('local_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5)),
+        ...payloadWithCols,
+        vendor_role: vendorRole,
+        created_at: new Date().toISOString()
+      };
 
-      if (existingVendor) {
-        // Try update with all columns
-        let res = await supabase
-          .from('vendors' as any)
-          .update(payloadWithCols)
-          .eq('id', existingVendor.id);
+      const currentLocal = getStoredLocalVendors();
+      const updatedLocal = [
+        savedVendorObject,
+        ...currentLocal.filter(v => v.id !== savedVendorObject.id && v.cnic_no !== savedVendorObject.cnic_no && v.phone_no !== savedVendorObject.phone_no)
+      ];
+      saveStoredLocalVendors(updatedLocal);
+      setVendorsList(updatedLocal);
 
-        if (res.error && (res.error.code === 'PGRST204' || res.error.message?.includes('vendor_number') || res.error.message?.includes('employee_no'))) {
-          // Column(s) may not exist, fallback to basePayload (persisted in custom_fields JSON)
-          res = await supabase
+      // Attempt Supabase cloud sync
+      let cloudSynced = false;
+      try {
+        let error: any = null;
+
+        if (existingVendor && !existingVendor.id?.startsWith('local_')) {
+          // Try update with all columns
+          let res = await supabase
             .from('vendors' as any)
-            .update(basePayload)
+            .update(payloadWithCols)
             .eq('id', existingVendor.id);
-        }
-        error = res.error;
-      } else {
-        // Try insert with all columns
-        let res = await supabase
-          .from('vendors' as any)
-          .insert([payloadWithCols]);
 
-        if (res.error && (res.error.code === 'PGRST204' || res.error.message?.includes('vendor_number') || res.error.message?.includes('employee_no'))) {
-          // Column(s) may not exist, fallback to basePayload (persisted in custom_fields JSON)
-          res = await supabase
+          if (res.error && (res.error.code === 'PGRST204' || res.error.message?.includes('vendor_number') || res.error.message?.includes('employee_no'))) {
+            // Column(s) may not exist, fallback to basePayload (persisted in custom_fields JSON)
+            res = await supabase
+              .from('vendors' as any)
+              .update(basePayload)
+              .eq('id', existingVendor.id);
+          }
+          error = res.error;
+        } else {
+          // Try insert with all columns
+          let res = await supabase
             .from('vendors' as any)
-            .insert([basePayload]);
+            .insert([payloadWithCols]);
+
+          if (res.error && (res.error.code === 'PGRST204' || res.error.message?.includes('vendor_number') || res.error.message?.includes('employee_no'))) {
+            // Column(s) may not exist, fallback to basePayload (persisted in custom_fields JSON)
+            res = await supabase
+              .from('vendors' as any)
+              .insert([basePayload]);
+          }
+          error = res.error;
         }
-        error = res.error;
+
+        if (!error) {
+          cloudSynced = true;
+        }
+      } catch (cloudErr) {
+        console.warn("Cloud save failed (network/Supabase offline), saved locally:", cloudErr);
       }
 
-      if (error) throw error;
-      
-      toast.success(`${vendorRole === "employee" ? "Employee" : "Contractor"} saved successfully to database!`);
+      toast.success(
+        cloudSynced
+          ? `${vendorRole === "employee" ? "Employee" : "Contractor"} saved successfully to database!`
+          : `${vendorRole === "employee" ? "Employee" : "Contractor"} saved locally (offline mode)!`
+      );
       handleReset(true);
       fetchVendors();
     } catch (err: any) {

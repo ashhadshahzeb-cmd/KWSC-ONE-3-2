@@ -1378,6 +1378,30 @@ export default function FileTracking() {
 
     setIsSearchingVendor(true);
     try {
+      const query = val.trim().toLowerCase();
+      // First check local offline vendors directory
+      let localMatches: any[] = [];
+      try {
+        const raw = localStorage.getItem('kwsc_local_vendors_directory');
+        if (raw) {
+          const stored = JSON.parse(raw);
+          localMatches = stored.filter((v: any) =>
+            (v.vendor_name || "").toLowerCase().includes(query) ||
+            (v.cnic_no || "").includes(query) ||
+            (v.phone_no || "").includes(query) ||
+            (v.employee_no || "").includes(query) ||
+            (v.vendor_number || "").includes(query)
+          ).slice(0, 10);
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      if (localMatches.length > 0) {
+        setVendorSuggestions(localMatches);
+        setShowVendorSuggestions(true);
+      }
+
       const term = `%${val.trim()}%`;
       // Query vendors table
       const { data, error } = await supabase
@@ -1386,13 +1410,16 @@ export default function FileTracking() {
         .or(`vendor_name.ilike.${term},cnic_no.ilike.${term},phone_no.ilike.${term}`)
         .limit(10);
 
-      if (!error && data) {
+      if (!error && data && data.length > 0) {
         // Filter or rank by category if stored
         setVendorSuggestions(data);
         setShowVendorSuggestions(data.length > 0);
+      } else if (localMatches.length === 0) {
+        setVendorSuggestions([]);
+        setShowVendorSuggestions(false);
       }
     } catch (err) {
-      console.error("Vendor search failed:", err);
+      console.warn("Vendor search failed or offline:", err);
     } finally {
       setIsSearchingVendor(false);
     }
