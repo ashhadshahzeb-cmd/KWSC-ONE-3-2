@@ -612,25 +612,10 @@ export default function FileTracking() {
   const [isEditingMode, setIsEditingMode] = useState(false);
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
 
-  // Helper to extract vendor name and vendor number from received_from or explicit fields
+  // Helper to extract vendor name and vendor number: only returns vendorNo when explicitly provided
   const extractVendorDetails = (receivedFrom?: string, explicitVendorNo?: string) => {
     const vNo = (explicitVendorNo || "").trim();
-    if (!receivedFrom) return { name: "", vendorNo: vNo };
-    const str = receivedFrom.trim();
-    const parenMatch = str.match(/^(.*?)\s*\(([^)]+)\)$/);
-    if (parenMatch) {
-      return {
-        name: parenMatch[1].trim(),
-        vendorNo: vNo || parenMatch[2].trim()
-      };
-    }
-    const vMatch = str.match(/vendor\s*(?:#|no\.?|id)?\s*:?\s*([A-Za-z0-9\-_]+)/i);
-    if (vMatch) {
-      return {
-        name: str.replace(vMatch[0], "").trim(),
-        vendorNo: vNo || vMatch[1].trim()
-      };
-    }
+    const str = (receivedFrom || "").trim();
     return { name: str, vendorNo: vNo };
   };
 
@@ -641,7 +626,7 @@ export default function FileTracking() {
     registration_date: record.created_at ? getLocalDateString(record.created_at) : getLocalDateString(),
     print_date: record.print_date || (record.created_at ? getLocalDateString(record.created_at) : getLocalDateString()),
     received_from: record.received_from || "",
-    vendor_number: record.vendor_number || extractVendorDetails(record.received_from).vendorNo || "",
+    vendor_number: (record.vendor_number || "").trim(),
     receiving_number: record.receiving_number || "",
     mainCategory: record.mainCategory || record.main_category || "",
     subCategory: record.subCategory || record.sub_category || "",
@@ -715,43 +700,18 @@ export default function FileTracking() {
 
   const handleRequestEdit = async (record: any) => {
     setRecordToEdit(record);
-    if (isAdmin) {
-      setActiveTab("register");
-      setFormData({
-        ...formData,
-        ...buildFormDataFromRecord(record),
-      });
-      setIsEditingMode(true);
-      setEditingRecordId(record.id);
-      setIsForwardingMode(false);
-      const existingImages = extractRecordImages(record);
-      setFileImages(existingImages);
-      setFileImage(existingImages[0] || "");
-    } else if (!isFileEditPasswordEnabled) {
-      setActiveTab("register");
-      setFormData({
-        ...formData,
-        ...buildFormDataFromRecord(record),
-      });
-      setIsEditingMode(true);
-      setEditingRecordId(record.id);
-      setIsForwardingMode(false);
-      const existingImages = extractRecordImages(record);
-      setFileImages(existingImages);
-      setFileImage(existingImages[0] || "");
-    } else {
-      setApprovalStatus("waiting");
-      setIsEditModalOpen(true);
-      setEditPassword("");
-      await supabase.from('messages').insert([{
-        sender_role: userRole,
-        sender_name: userName,
-        receiver_role: 'admin',
-        receiver_name: 'Admin',
-        message: `[FILE_TRACKING_EDIT_REQ]::${record.id}`
-      }]);
-      toast.info("Approval request sent to Admin.");
-    }
+    setActiveTab("register");
+    setFormData({
+      ...formData,
+      ...buildFormDataFromRecord(record),
+    });
+    setIsEditingMode(true);
+    setEditingRecordId(record.id);
+    setIsForwardingMode(false);
+    const existingImages = extractRecordImages(record);
+    setFileImages(existingImages);
+    setFileImage(existingImages[0] || "");
+    toast.info(`Editing record: ${record.subject || record.cfo_diary_number || ''}`);
   };
 
   const handleCfoDiarySearch = async () => {
@@ -1466,10 +1426,8 @@ export default function FileTracking() {
 
     setVendorSearchInput(identifier);
 
-    // Format received_from: Include Vendor Number if available
-    const payeeName = vendorNo 
-      ? `${vendor.vendor_name} (${vendorNo})` 
-      : (vendor.vendor_name || "");
+    // Keep received_from clean (do not embed vendor number in parentheses)
+    const payeeName = vendor.vendor_name || "";
 
     setFormData(prev => ({
       ...prev,
@@ -1718,7 +1676,7 @@ export default function FileTracking() {
             mark_to: formData.mark_to,
             additional_mark_to: formData.additional_mark_to,
             received_from: formData.received_from,
-            vendor_number: formData.vendor_number || extractVendorDetails(formData.received_from).vendorNo,
+            vendor_number: (formData.vendor_number || "").trim(),
           });
         }
         handleFormReset();
@@ -1805,7 +1763,7 @@ export default function FileTracking() {
             mark_to: formData.mark_to,
             additional_mark_to: formData.additional_mark_to,
             received_from: formData.received_from,
-            vendor_number: formData.vendor_number || extractVendorDetails(formData.received_from).vendorNo,
+            vendor_number: (formData.vendor_number || "").trim(),
           });
         }
         handleFormReset();
@@ -1935,7 +1893,7 @@ export default function FileTracking() {
             mark_to: formData.mark_to,
             additional_mark_to: formData.additional_mark_to,
             received_from: formData.received_from,
-            vendor_number: formData.vendor_number || extractVendorDetails(formData.received_from).vendorNo,
+            vendor_number: (formData.vendor_number || "").trim(),
           });
         }
         handleFormReset();
@@ -3244,7 +3202,7 @@ export default function FileTracking() {
       additional_mark_to: ticketData?.additional_mark_to,
       history: ticketData?.history,
       received_from: ticketData?.received_from,
-      vendor_number: (ticketData as any)?.vendor_number || extractVendorDetails(ticketData?.received_from).vendorNo,
+      vendor_number: (ticketData as any)?.vendor_number?.trim() || "",
     });
   };
 
@@ -4677,7 +4635,7 @@ export default function FileTracking() {
                                 additional_mark_to: file.additional_mark_to,
                                 history: file.history,
                                 received_from: file.received_from,
-                                vendor_number: (file as any)?.vendor_number || extractVendorDetails(file.received_from).vendorNo,
+                                vendor_number: (file as any)?.vendor_number?.trim() || "",
                               })}
                             >
                               <Printer className="w-3.5 h-3.5" />
@@ -5420,7 +5378,7 @@ export default function FileTracking() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {/* Field 1: Dynamic Identifier Search (CNIC or Employee No) */}
                   <div className="space-y-1.5 relative">
                     <Label className="text-[11px] uppercase font-bold text-muted-foreground flex items-center justify-between">
@@ -5495,6 +5453,20 @@ export default function FileTracking() {
                       value={formData.received_from}
                       onChange={e => setFormData({ ...formData, received_from: e.target.value })}
                       className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold text-xs h-10"
+                    />
+                  </div>
+
+                  {/* Field 3: Vendor Number (Only when manually entered or selected) */}
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] uppercase font-bold text-muted-foreground flex items-center justify-between">
+                      <span>Vendor Number</span>
+                      <span className="text-[10px] text-muted-foreground/60">Optional</span>
+                    </Label>
+                    <Input
+                      placeholder="e.g. 10243"
+                      value={formData.vendor_number || ""}
+                      onChange={e => setFormData({ ...formData, vendor_number: e.target.value })}
+                      className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono font-semibold text-xs h-10"
                     />
                   </div>
                 </div>
@@ -6893,7 +6865,7 @@ export default function FileTracking() {
                                    mark_to: file.mark_to,
                                    additional_mark_to: file.additional_mark_to,
                                    received_from: file.received_from,
-                                   vendor_number: (file as any)?.vendor_number || extractVendorDetails(file.received_from).vendorNo,
+                                   vendor_number: (file as any)?.vendor_number?.trim() || "",
                                  });
                               }}
                               className="h-8 gap-2 border border-blue-600/30 bg-blue-50/70 text-[#1e3a8a] hover:bg-[#1e3a8a] hover:text-white font-bold text-xs rounded-xl transition-all shadow-xs"
@@ -7224,8 +7196,8 @@ export default function FileTracking() {
                           </div>
                         </div>
 
-                        {/* 2. Vendor Number right under Subject */}
-                        {(effectiveVendorNo || (effectiveVendorName && effectiveVendorName !== effectiveVendorNo)) && (
+                        {/* 2. Vendor Number right under Subject (ONLY if vendor number is explicitly filled) */}
+                        {effectiveVendorNo && (
                           <div className="flex items-start gap-3">
                             <div className="w-8 h-8 rounded-xl bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 flex items-center justify-center shrink-0 border border-purple-100 dark:border-purple-700 print:border-slate-200">
                               <Users className="w-4 h-4 text-purple-700 dark:text-purple-300" />
@@ -7661,12 +7633,12 @@ export default function FileTracking() {
                         <p className="text-sm font-black font-mono text-zinc-900 leading-tight tracking-tight">{ticket.subject || "Subject Details"}</p>
                       </div>
                       {(() => {
-                        const vDet = extractVendorDetails(ticket.received_from, ticket.vendor_number);
-                        return vDet.vendorNo ? (
+                        const vNo = (ticket.vendor_number || "").trim();
+                        return vNo ? (
                           <div className="bg-purple-50 p-2.5 rounded-md border border-purple-100 flex items-center justify-between">
                             <span className="text-[10px] font-black text-purple-700 uppercase tracking-widest font-mono">Vendor No</span>
                             <span className="text-xs font-black font-mono text-purple-900">
-                              #{vDet.vendorNo} {vDet.name ? `(${vDet.name})` : ''}
+                              #{vNo} {ticket.received_from ? `(${ticket.received_from})` : ''}
                             </span>
                           </div>
                         ) : null;

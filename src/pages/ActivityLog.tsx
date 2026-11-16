@@ -459,22 +459,7 @@ export default function ActivityLog() {
   }, [selectedLog]);
   const extractVendorDetails = (receivedFrom?: string, explicitVendorNo?: string) => {
     const vNo = (explicitVendorNo || "").trim();
-    if (!receivedFrom) return { name: "", vendorNo: vNo };
-    const str = receivedFrom.trim();
-    const parenMatch = str.match(/^(.*?)\s*\(([^)]+)\)$/);
-    if (parenMatch) {
-      return {
-        name: parenMatch[1].trim(),
-        vendorNo: vNo || parenMatch[2].trim()
-      };
-    }
-    const vMatch = str.match(/vendor\s*(?:#|no\.?|id)?\s*:?\s*([A-Za-z0-9\-_]+)/i);
-    if (vMatch) {
-      return {
-        name: str.replace(vMatch[0], "").trim(),
-        vendorNo: vNo || vMatch[1].trim()
-      };
-    }
+    const str = (receivedFrom || "").trim();
     return { name: str, vendorNo: vNo };
   };
 
@@ -723,7 +708,6 @@ export default function ActivityLog() {
       log.details?.vendor_number ||
       log.details?.after?.vendor_number ||
       log.details?.before?.vendor_number ||
-      extractVendorDetails(received_from).vendorNo ||
       '';
 
     setQrPrintModal({
@@ -1458,7 +1442,7 @@ export default function ActivityLog() {
                             </div>
 
                             {/* 2. Vendor Number right under Subject */}
-                            {(effectiveVendorNo || (effectiveVendorName && effectiveVendorName !== effectiveVendorNo)) && (
+                            {effectiveVendorNo && (
                               <div className="flex items-start gap-3">
                                 <div className="w-8 h-8 rounded-xl bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 flex items-center justify-center shrink-0 border border-purple-100 dark:border-purple-700 print:border-slate-200">
                                   <Users className="w-4 h-4 text-purple-700 dark:text-purple-300" />

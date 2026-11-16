@@ -239,6 +239,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const localSignIn = async (email: string, password: string): Promise<{ success: boolean; error?: string; method?: string }> => {
     const trimEmail = email.trim().toLowerCase();
+    let authError: any = null;
+    let authUser: User | null = null;
     
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -247,6 +249,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       if (error) {
+        authError = error;
+      } else if (data.user) {
+        authUser = data.user;
+      }
+    } catch (err: any) {
+      console.warn("Supabase Auth signInWithPassword threw:", err);
+      authError = err;
+    }
+
+    try {
+      if (authError || !authUser) {
         try {
           const { data: hrmsData, error: hrmsError } = await supabase
             .from('hrms_employees')
@@ -355,7 +368,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, error: 'Invalid email or password. Please check your credentials.' };
       }
 
-      if (data.user) {
+      if (authUser) {
         const { data: settings } = await supabase
           .from('department_users_settings')
           .select('is_blocked')
@@ -369,8 +382,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       getUserIP().then(ip => {
-        const role = data.user?.user_metadata?.role_id || 'unknown';
-        const name = data.user?.user_metadata?.display_name || trimEmail;
+        const role = authUser?.user_metadata?.role_id || 'unknown';
+        const name = authUser?.user_metadata?.display_name || trimEmail;
         logActivity({
           userRole: role,
           userName: name,
