@@ -85,6 +85,30 @@ import Fuse from "fuse.js";
 import { Highlight } from "@/components/ui/Highlight";
 import { CommandPalette } from "@/components/CommandPalette";
 import DailyCategoryReportModal from "@/components/DailyCategoryReportModal";
+import { numberToWords } from "@/lib/numberToWords";
+
+function formatAmountWithCommas(val: number | string | undefined | null): string {
+  if (val === undefined || val === null || val === "" || val === 0 || val === "0") return "";
+  const clean = val.toString().replace(/,/g, "").trim();
+  if (clean === "") return "";
+  const parts = clean.split(".");
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return parts.length > 1 ? `${parts[0]}.${parts.slice(1).join("")}` : parts[0];
+}
+
+function parseAmountValue(val: number | string | undefined | null): number {
+  if (val === undefined || val === null || val === "") return 0;
+  const clean = val.toString().replace(/,/g, "").trim();
+  const num = parseFloat(clean);
+  return isNaN(num) ? 0 : num;
+}
+
+function getAmountInWords(val: number | string | undefined | null): string {
+  if (val === undefined || val === null || val === "") return "";
+  const num = parseAmountValue(val);
+  if (num <= 0) return "";
+  return numberToWords(num);
+}
 
 const getSubCatLabel = (val: string | null) => {
   if (!val) return "---";
@@ -1588,14 +1612,18 @@ export default function FileTracking() {
     setIsSavingForm(true);
 
     try {
+      const numericAmount = parseAmountValue(formData.amount);
+      const numericGross = parseAmountValue(formData.gross_amount);
+      const numericDeduction = parseAmountValue(formData.deduction);
+
       const snapshot = {
         ...formData,
         date: new Date().toISOString(),
         processed_by: sections.find(s => s.id === currentRole)?.name,
         action: isEditingMode ? "EDITED" : (isForwardingMode ? "FORWARDED" : "REGISTERED"),
-        amount: formData.amount,
-        gross_amount: formData.gross_amount || 0,
-        deduction: formData.deduction || 0,
+        amount: numericAmount,
+        gross_amount: numericGross,
+        deduction: numericDeduction,
         file_image: fileImages[0] || undefined,
         file_images: fileImages.length > 0 ? fileImages : undefined
       };
@@ -1605,7 +1633,7 @@ export default function FileTracking() {
         const updatePayload = {
           cfo_diary_number: formData.cfo_diary_number,
           inward_date: formData.inward_date,
-          received_from: formData.received_from,
+          received_from: formData.received_from || formData.file_purpose || "",
           receiving_number: formData.receiving_number,
           main_category: formData.mainCategory,
           sub_category: formData.subCategory,
@@ -1615,9 +1643,9 @@ export default function FileTracking() {
           mark_to: formData.mark_to,
           outward_date: formData.outward_date,
           remarks: formData.remarks,
-          amount: formData.amount,
-        gross_amount: formData.gross_amount || 0,
-        deduction: formData.deduction || 0,
+          amount: numericAmount,
+          gross_amount: numericGross,
+          deduction: numericDeduction,
           employee_number: formData.employee_number,
           voucher_code: formData.voucher_code,
           vehicle_no: formData.vehicle_no,
@@ -1816,7 +1844,7 @@ export default function FileTracking() {
           tracking_id: trackingId,
           cfo_diary_number: formData.cfo_diary_number,
           inward_date: formData.inward_date,
-          received_from: formData.received_from,
+          received_from: formData.received_from || formData.file_purpose || "",
           receiving_number: formData.receiving_number,
           main_category: formData.mainCategory,
           sub_category: formData.subCategory,
@@ -1826,9 +1854,9 @@ export default function FileTracking() {
           mark_to: formData.mark_to,
           outward_date: formData.outward_date,
           remarks: formData.remarks,
-          amount: formData.amount,
-        gross_amount: formData.gross_amount || 0,
-        deduction: formData.deduction || 0,
+          amount: numericAmount,
+          gross_amount: numericGross,
+          deduction: numericDeduction,
           employee_number: formData.employee_number,
           voucher_code: formData.voucher_code,
           vehicle_no: formData.vehicle_no,
@@ -3565,9 +3593,9 @@ export default function FileTracking() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold text-white/70 uppercase">File Purpose / Description</label>
+                <label className="text-xs font-bold text-white/70 uppercase">Received From</label>
                 <Input 
-                  placeholder="e.g., Payment Voucher for July" 
+                  placeholder="Received From" 
                   className="bg-white/5 border-white/10 mt-1 text-white"
                   value={preEntryForm.file_purpose}
                   onChange={(e) => setPreEntryForm(prev => ({ ...prev, file_purpose: e.target.value }))}
@@ -5335,9 +5363,9 @@ export default function FileTracking() {
 
               {currentRole !== 'entry_operator' && (
                 <div className="space-y-2">
-                  <Label className="text-xs uppercase font-bold text-teal-600 dark:text-[#14b8a6]">File Purpose / Description {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
+                  <Label className="text-xs uppercase font-bold text-teal-600 dark:text-[#14b8a6]">Received From {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
                   <Input
-                    placeholder="File Purpose"
+                    placeholder="Received From"
                     value={formData.file_purpose || ""}
                     onChange={e => setFormData({ ...formData, file_purpose: e.target.value })}
                     className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11"
@@ -5785,45 +5813,70 @@ export default function FileTracking() {
               {(formData.mainCategory === 'employee' || formData.mainCategory === 'contractor') ? (
                 <>
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label className="text-xs uppercase font-bold text-muted-foreground">Amount (PKR) <span className="text-emerald-500 text-[9px]">(Gross Amount)</span></Label>
                       <Input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
                         placeholder="Enter Gross Amount"
-                        value={formData.gross_amount}
+                        value={formatAmountWithCommas(formData.gross_amount)}
                         onChange={e => {
-                          const gross = Number(e.target.value);
-                          setFormData({ ...formData, gross_amount: gross, amount: gross - (formData.deduction || 0) })
+                          const clean = e.target.value.replace(/[^0-9.]/g, '');
+                          const parts = clean.split('.');
+                          const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
+                          const gross = sanitized === '' ? 0 : (parseFloat(sanitized) || 0);
+                          const ded = parseAmountValue(formData.deduction);
+                          setFormData({ ...formData, gross_amount: sanitized === '' ? '' : sanitized, amount: gross - ded });
                         }}
                         className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-bold h-11"
                       />
+                      {getAmountInWords(formData.gross_amount) && (
+                        <p className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 dark:bg-emerald-500/15 px-2.5 py-1 rounded-md border border-emerald-500/20 italic">
+                          <span className="font-bold not-italic">In Words:</span> {getAmountInWords(formData.gross_amount)}
+                        </p>
+                      )}
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label className="text-xs uppercase font-bold text-muted-foreground">Deduction (PKR)</Label>
                       <Input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
                         placeholder="Enter Deduction"
-                        value={formData.deduction}
+                        value={formatAmountWithCommas(formData.deduction)}
                         onChange={e => {
-                          const ded = Number(e.target.value);
-                          setFormData({ ...formData, deduction: ded, amount: (formData.gross_amount || 0) - ded })
+                          const clean = e.target.value.replace(/[^0-9.]/g, '');
+                          const parts = clean.split('.');
+                          const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
+                          const ded = sanitized === '' ? 0 : (parseFloat(sanitized) || 0);
+                          const gross = parseAmountValue(formData.gross_amount);
+                          setFormData({ ...formData, deduction: sanitized === '' ? '' : sanitized, amount: gross - ded });
                         }}
                         className="bg-white dark:bg-slate-900 border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 font-bold h-11"
                       />
+                      {getAmountInWords(formData.deduction) && (
+                        <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400 bg-rose-500/10 dark:bg-rose-500/15 px-2.5 py-1 rounded-md border border-rose-500/20 italic">
+                          <span className="font-bold not-italic">In Words:</span> {getAmountInWords(formData.deduction)}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     <Label className="text-xs uppercase font-bold text-muted-foreground">Amount (PKR) <span className="text-emerald-500 text-[9px]">(Net Amount)</span></Label>
                     <Input
-                      type="number"
+                      type="text"
                       disabled
-                      value={formData.amount}
-                      className="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-800 font-black text-emerald-700 dark:text-emerald-400 opacity-90 cursor-not-allowed h-11"
+                      value={formData.amount !== undefined && formData.amount !== null && formData.amount !== "" ? (Number(formData.amount).toLocaleString('en-US') || "0") : "0"}
+                      className="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-800 font-black text-emerald-700 dark:text-emerald-400 opacity-90 cursor-not-allowed h-11 tracking-wider"
                     />
+                    {getAmountInWords(formData.amount) && (
+                      <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 dark:bg-emerald-500/15 px-2.5 py-1 rounded-md border border-emerald-500/20 italic">
+                        <span className="font-bold not-italic">In Words:</span> {getAmountInWords(formData.amount)}
+                      </p>
+                    )}
                   </div>
                 </>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <Label className="text-xs uppercase font-bold text-muted-foreground">Amount (PKR) <span className="text-emerald-500 text-[9px]">(Net Amount)</span></Label>
                     <div className="flex items-center gap-2">
@@ -5836,13 +5889,24 @@ export default function FileTracking() {
                     </div>
                   </div>
                   <Input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     placeholder="Enter Amount"
-                    value={formData.amount}
+                    value={formData.no_amount ? "0" : formatAmountWithCommas(formData.amount)}
                     disabled={formData.no_amount || false}
-                    onChange={e => setFormData({ ...formData, amount: Number(e.target.value) })}
+                    onChange={e => {
+                      const clean = e.target.value.replace(/[^0-9.]/g, '');
+                      const parts = clean.split('.');
+                      const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
+                      setFormData({ ...formData, amount: sanitized === '' ? '' : sanitized });
+                    }}
                     className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-bold h-11 disabled:opacity-40 disabled:cursor-not-allowed"
                   />
+                  {!formData.no_amount && getAmountInWords(formData.amount) && (
+                    <p className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 dark:bg-emerald-500/15 px-2.5 py-1 rounded-md border border-emerald-500/20 italic">
+                      <span className="font-bold not-italic">In Words:</span> {getAmountInWords(formData.amount)}
+                    </p>
+                  )}
                 </div>
               )}
 

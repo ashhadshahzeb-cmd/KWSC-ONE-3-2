@@ -28,18 +28,22 @@ export function numberToWords(num: number): string {
   if (num === 0) return "Zero";
   if (!num || isNaN(num)) return "";
 
+  const intPart = Math.floor(Math.abs(num));
+  const decimalPart = Math.round((Math.abs(num) - intPart) * 100);
+
   let str = "";
+  let n = intPart;
 
-  const crore = Math.floor(num / 10000000);
-  num = num % 10000000;
+  const crore = Math.floor(n / 10000000);
+  n = n % 10000000;
 
-  const lakh = Math.floor(num / 100000);
-  num = num % 100000;
+  const lakh = Math.floor(n / 100000);
+  n = n % 100000;
 
-  const thousand = Math.floor(num / 1000);
-  num = num % 1000;
+  const thousand = Math.floor(n / 1000);
+  n = n % 1000;
 
-  const remainder = num;
+  const remainder = n;
 
   if (crore > 0) {
     str += convertGroup(crore) + " Crore ";
@@ -51,8 +55,12 @@ export function numberToWords(num: number): string {
     str += convertGroup(thousand) + " Thousand ";
   }
   if (remainder > 0) {
-    str += convertGroup(remainder);
+    str += convertGroup(remainder) + " ";
   }
 
-  return "Rupees " + str.trim() + " Only";
+  let result = "Rupees " + (str.trim() || "Zero");
+  if (decimalPart > 0) {
+    result += " and " + convertGroup(decimalPart) + " Paisa";
+  }
+  return result + " Only";
 }

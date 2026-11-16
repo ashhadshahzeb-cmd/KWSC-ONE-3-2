@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kwsc-file-tracking": {
+      "command": "node",
+      "args": [
+        "--no-warnings",
+        "D:\\Offical-Data\\KWSC-ONE-WINDOW-FACI-main\\mcp-server\\index.js"
+      ]
+    }
+  }
+}

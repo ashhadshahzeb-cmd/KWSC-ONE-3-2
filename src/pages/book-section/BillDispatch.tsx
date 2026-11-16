@@ -34,6 +34,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { numberToWords } from "@/lib/numberToWords";
+
+function formatAmountWithCommas(val: number | string | undefined | null): string {
+  if (val === undefined || val === null || val === "" || val === 0 || val === "0") return "";
+  const clean = val.toString().replace(/,/g, "").trim();
+  if (clean === "") return "";
+  const parts = clean.split(".");
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return parts.length > 1 ? `${parts[0]}.${parts.slice(1).join("")}` : parts[0];
+}
+
+function parseAmountValue(val: number | string | undefined | null): number {
+  if (val === undefined || val === null || val === "") return 0;
+  const clean = val.toString().replace(/,/g, "").trim();
+  const num = parseFloat(clean);
+  return isNaN(num) ? 0 : num;
+}
 
 export default function BillDispatch() {
   const navigate = useNavigate();
@@ -419,15 +436,26 @@ export default function BillDispatch() {
                 className="bg-muted/20 border-border/50 h-9 font-mono text-xs"
               />
             </div>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label className="text-[10px] font-bold uppercase">Amount (If any)</Label>
               <Input
-                type="number"
+                type="text"
+                inputMode="numeric"
                 placeholder="0.00"
-                value={formData.amount}
-                onChange={e => setFormData({ ...formData, amount: e.target.value })}
-                className="bg-muted/20 border-border/50 h-9 font-mono text-xs text-primary"
+                value={formatAmountWithCommas(formData.amount)}
+                onChange={e => {
+                  const clean = e.target.value.replace(/[^0-9.]/g, '');
+                  const parts = clean.split('.');
+                  const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
+                  setFormData({ ...formData, amount: sanitized });
+                }}
+                className="bg-muted/20 border-border/50 h-9 font-mono text-xs text-primary font-bold"
               />
+              {parseAmountValue(formData.amount) > 0 && (
+                <p className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 italic">
+                  <span className="font-bold not-italic">In Words:</span> {numberToWords(parseAmountValue(formData.amount))}
+                </p>
+              )}
             </div>
             <div className="space-y-2 pt-2">
               <Label className="text-[10px] font-bold uppercase">Subject / Purpose *</Label>

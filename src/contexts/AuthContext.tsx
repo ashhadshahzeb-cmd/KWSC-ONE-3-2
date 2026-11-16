@@ -280,6 +280,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.error("HRMS fallback failed", e);
         }
         
+        // Check department_users_settings table directly from Supabase
+        try {
+          const { data: deptUser } = await supabase
+            .from('department_users_settings')
+            .select('*')
+            .eq('email', trimEmail)
+            .maybeSingle();
+
+          if (deptUser && deptUser.password === password) {
+            if (deptUser.is_blocked) {
+              return { success: false, error: 'Your account has been blocked. Please contact Admin.' };
+            }
+            localStorage.setItem('kwsb_local_auth', JSON.stringify({
+              roleId: deptUser.role_id,
+              displayName: deptUser.display_name,
+              email: deptUser.email,
+            }));
+            const role = deptUser.role_id;
+            setUserRole(role);
+            setUserName(deptUser.display_name);
+            setSession({} as Session);
+            setUser({ email: deptUser.email } as User);
+            setIsAdmin(role === 'super_admin' || role === 'cfo' || role === 'admin');
+            setAllowOverrideDates(role === 'super_admin' || role === 'cfo' || role === 'admin' || deptUser.allow_override_dates);
+            
+            getUserIP().then(ip => {
+              logActivity({
+                userRole: deptUser.role_id,
+                userName: deptUser.display_name,
+                action: 'LOGIN',
+                details: { email: trimEmail, method: 'dept_settings_fallback', ip },
+              });
+              checkOffHoursAccess(deptUser.role_id, deptUser.display_name, ip);
+            });
+            return { success: true, method: 'dept_settings' };
+          }
+        } catch (e) {
+          console.error("Dept settings fallback failed", e);
+        }
+
         // Final fallback: check hardcoded department users
         const allUsers = getDepartmentUsers();
         const localUser = allUsers.find(u => u.email === trimEmail && u.password === password);
@@ -309,7 +349,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return { success: true, method: 'hardcoded' };
         }
 
-        return { success: false, error: error.message };
+        return { success: false, error: 'Invalid email or password. Please check your credentials.' };
       }
 
       if (data.user) {

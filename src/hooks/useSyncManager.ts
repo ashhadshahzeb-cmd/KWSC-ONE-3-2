@@ -91,7 +91,7 @@ export function useSyncManager() {
           if (error) throw error;
 
           // 📊 Direct Browser -> Google Sheets Sync (all 30 fields, non-blocking)
-          syncToGoogleSheetDirectly(payloadToUpload).catch(() => {});
+          syncToGoogleSheetDirectly(payloadToUpload, 'INSERT').catch(() => {});
 
         } else if (task.action === 'update') {
           const { id: _id, is_dirty, deleted_locally, additional_mark_to, department_number, fuel_station, ...payload } = payloadToUpload;
@@ -110,8 +110,19 @@ export function useSyncManager() {
             .eq('receiving_number', task.record_id!);
           if (error) throw error;
 
-          // 📊 Direct Browser -> Google Sheets Sync (all 30 fields, non-blocking)
-          syncToGoogleSheetDirectly(payloadToUpload).catch(() => {});
+          // 📊 Direct Browser -> Google Sheets Sync (Merge with full local record so NO fields are missing)
+          try {
+            const localRecord = task.record_id 
+              ? await db.records.where('receiving_number').equals(task.record_id).first() 
+              : (payloadToUpload.id ? await db.records.where('id').equals(payloadToUpload.id).first() : null);
+
+            const mergedRecord = { ...(localRecord || {}), ...payloadToUpload };
+            if (mergedRecord.cfo_diary_number || mergedRecord.receiving_number || mergedRecord.subject) {
+              syncToGoogleSheetDirectly(mergedRecord, 'UPDATE').catch(() => {});
+            }
+          } catch (syncErr) {
+            console.warn("Failed to merge local record for sheets sync:", syncErr);
+          }
 
         } else if (task.action === 'delete') {
           const { error } = await supabase

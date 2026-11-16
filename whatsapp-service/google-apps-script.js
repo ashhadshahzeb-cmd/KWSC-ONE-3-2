@@ -20,7 +20,7 @@ var ALL_HEADERS = [
   'Remarks',
   'Record ID',
   'File Owner / Handover Person',
-  'File Purpose / Description',
+  'Received From',
   'Registration Date',
   'Print Date',
   'Additional Mark To',
@@ -66,7 +66,16 @@ function doPost(e) {
     }
     
     var rec = data.record || {};
+
+    // Reject incomplete ghost records
+    if (!rec.cfo_diary_number && !rec.receiving_number && !rec.subject) {
+      return ContentService.createTextOutput(JSON.stringify({ status: 'ignored', message: 'Incomplete record without diary, receiving, or subject' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
     
+    var effectiveRecFrom = rec.received_from || rec.party_name || rec.file_purpose || '';
+    var effectivePurpose = rec.file_purpose || rec.received_from || '';
+
     // Construct complete 30-column row
     var row = data.row || [
       data.timestamp || new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' }),
@@ -77,7 +86,7 @@ function doPost(e) {
       rec.subject || '',
       rec.main_category || rec.mainCategory || '',
       rec.sub_category || rec.subCategory || '',
-      rec.received_from || rec.party_name || '',
+      effectiveRecFrom,
       rec.mark_to || '',
       rec.amount || '',
       rec.inward_date || '',
@@ -85,7 +94,7 @@ function doPost(e) {
       rec.remarks || '',
       rec.id || '',
       rec.handover_person_name || '',
-      rec.file_purpose || '',
+      effectivePurpose,
       rec.created_at || rec.registration_date || '',
       rec.print_date || '',
       rec.additional_mark_to || '',
@@ -101,17 +110,27 @@ function doPost(e) {
       rec.subject_prefix || ''
     ];
     
-    // If updating an existing record, update the existing row in-place
-    if (data.action === 'UPDATE' && (rec.id || rec.receiving_number)) {
-      var lastRow = sheet.getLastRow();
-      if (lastRow > 1) {
-        var ids = sheet.getRange(2, 15, lastRow - 1, 1).getValues(); // Column O (Record ID)
-        for (var i = ids.length - 1; i >= 0; i--) {
-          if (rec.id && ids[i][0] && ids[i][0].toString().trim() === rec.id.toString().trim()) {
-            sheet.getRange(i + 2, 1, 1, row.length).setValues([row]);
-            return ContentService.createTextOutput(JSON.stringify({ status: 'success', action: 'updated', row: i + 2 }))
-              .setMimeType(ContentService.MimeType.JSON);
-          }
+    // Check if record already exists (by ID, Receiving No, or Diary No) to prevent duplicate ghost rows
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      var idValues = sheet.getRange(2, 15, lastRow - 1, 1).getValues(); // Col O (Record ID)
+      var recValues = sheet.getRange(2, 3, lastRow - 1, 1).getValues();  // Col C (Receiving No)
+      var diaryValues = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // Col B (CFO Diary No)
+
+      for (var i = idValues.length - 1; i >= 0; i--) {
+        var existingId = idValues[i][0] ? idValues[i][0].toString().trim() : '';
+        var existingRec = recValues[i][0] ? recValues[i][0].toString().trim() : '';
+        var existingDiary = diaryValues[i][0] ? diaryValues[i][0].toString().trim() : '';
+
+        var isMatch = false;
+        if (rec.id && existingId && existingId === rec.id.toString().trim()) isMatch = true;
+        else if (rec.receiving_number && existingRec && existingRec === rec.receiving_number.toString().trim()) isMatch = true;
+        else if (rec.cfo_diary_number && existingDiary && existingDiary === rec.cfo_diary_number.toString().trim()) isMatch = true;
+
+        if (isMatch) {
+          sheet.getRange(i + 2, 1, 1, row.length).setValues([row]);
+          return ContentService.createTextOutput(JSON.stringify({ status: 'success', action: 'updated', row: i + 2 }))
+            .setMimeType(ContentService.MimeType.JSON);
         }
       }
     }
