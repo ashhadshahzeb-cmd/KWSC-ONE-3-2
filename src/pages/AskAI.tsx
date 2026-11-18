@@ -82,12 +82,23 @@ Main live database se 100% accurate statistics aur records nikaal kar **Official
   const [inputQuery, setInputQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [totalDbRecords, setTotalDbRecords] = useState<number>(0);
   const [geminiKey, setGeminiKey] = useState<string>(() => {
     return localStorage.getItem("kwsc_gemini_api_key") || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
   });
   const [keyInput, setKeyInput] = useState(geminiKey);
   const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // On mount, pre-load the total record count
+  useEffect(() => {
+    (async () => {
+      try {
+        const count = await db.records.count();
+        setTotalDbRecords(count);
+      } catch (e) {}
+    })();
+  }, []);
 
   // Save chat to localStorage
   useEffect(() => {
@@ -129,32 +140,83 @@ Main live database se 100% accurate statistics aur records nikaal kar **Official
     toast.success("Gemini API key saved!");
   };
 
-  // Helper to get ALL records from Dexie + Supabase
+  // Helper to get ALL records from BOTH Dexie + Supabase, merged and deduplicated
   const getAllDatabaseRecords = async (): Promise<FileRecord[]> => {
-    let records: FileRecord[] = [];
+    const recordMap = new Map<string, FileRecord>();
+
+    // 1. Load ALL from local IndexedDB (Dexie) — works offline, instant
     try {
-      records = await db.records.toArray();
+      const localRecords = await db.records.toArray();
+      for (const r of localRecords) {
+        if (r.deleted_locally) continue;
+        const key = r.receiving_number || r.cfo_diary_number || r.id || `local-${Math.random()}`;
+        recordMap.set(key, r);
+      }
+      console.log(`[Ask AI] Loaded ${localRecords.length} records from IndexedDB`);
     } catch (e) {
       console.warn("Dexie read error", e);
     }
 
-    if (records.length === 0) {
-      try {
-        const { data, error } = await supabase.from('file_tracking').select('*').limit(2000);
-        if (!error && data) {
-          records = data as any[];
+    // 2. ALWAYS also try Supabase cloud (fetch ALL pages, not just one)
+    try {
+      let page = 0;
+      const PAGE_SIZE = 1000;
+      let hasMore = true;
+      let cloudCount = 0;
+
+      while (hasMore) {
+        const from = page * PAGE_SIZE;
+        const to = from + PAGE_SIZE - 1;
+        const { data, error } = await supabase
+          .from('file_tracking_records' as any)
+          .select('id, cfo_diary_number, receiving_number, tracking_id, inward_date, received_from, main_category, sub_category, subject, mark_to, amount, gross_amount, deduction, status, remarks, employee_number, emp_no, emp_name, party_name, voucher_code, vehicle_no, handover_person_name, file_purpose, registration_date, print_date, outward_date, created_at, history, vendor_number, budget_code, additional_mark_to')
+          .range(from, to);
+
+        if (error) {
+          console.warn("Supabase fetch error on page", page, error.message);
+          break;
         }
-      } catch (e) {
-        console.warn("Supabase fetch error", e);
+        if (!data || data.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        for (const r of data as any[]) {
+          const key = r.receiving_number || r.cfo_diary_number || r.id;
+          if (key && !recordMap.has(key)) {
+            recordMap.set(key, r);
+          }
+        }
+        cloudCount += data.length;
+        
+        if (data.length < PAGE_SIZE) {
+          hasMore = false;
+        } else {
+          page++;
+          if (page > 20) break; // Safety: max 20,000 records
+        }
       }
+      if (cloudCount > 0) {
+        console.log(`[Ask AI] Loaded ${cloudCount} records from Supabase cloud`);
+      }
+    } catch (e) {
+      console.warn("Supabase fetch error", e);
     }
-    return records;
+
+    const allRecords = Array.from(recordMap.values()).filter(r => r.status !== 'trashed');
+    console.log(`[Ask AI] Total merged records (after dedup): ${allRecords.length}`);
+    return allRecords;
   };
 
   // Intelligent Local Query Engine
   const processQueryLocally = async (rawQuery: string): Promise<{ text: string; records: FileRecord[]; title: string }> => {
     const allRecords = await getAllDatabaseRecords();
+    setTotalDbRecords(allRecords.length);
     const q = rawQuery.toLowerCase().trim();
+
+    // Helper: get main_category regardless of field name variations
+    const getMainCat = (r: any) => ((r.main_category || r.mainCategory || "")).toLowerCase();
+    const getSubCat = (r: any) => ((r.sub_category || r.subCategory || "")).toLowerCase();
 
     const isCountQuery = 
       q.includes("kitni") || 
@@ -169,8 +231,8 @@ Main live database se 100% accurate statistics aur records nikaal kar **Official
     // 1. CONTRACTOR QUERY
     if (q.includes("contractor") || q.includes("thekedar") || q.includes("contingenc") || q.includes("security deposit")) {
       const filtered = allRecords.filter(r => {
-        const main = (r.main_category || "").toLowerCase();
-        const sub = (r.sub_category || "").toLowerCase();
+        const main = getMainCat(r);
+        const sub = getSubCat(r);
         const party = (r.party_name || r.received_from || "").toLowerCase();
         const subj = (r.subject || "").toLowerCase();
         return (
@@ -191,7 +253,7 @@ Main live database se 100% accurate statistics aur records nikaal kar **Official
         if (r.amount && !isNaN(Number(r.amount))) totalAmount += Number(r.amount);
         const dept = (r.mark_to || r.status || "CFO Office").toUpperCase();
         deptBreakdown[dept] = (deptBreakdown[dept] || 0) + 1;
-        const subCat = (r.sub_category || "Contractor Bills").toUpperCase();
+        const subCat = (getSubCat(r) || "contractor bills").toUpperCase();
         subBreakdown[subCat] = (subBreakdown[subCat] || 0) + 1;
       });
 
@@ -226,10 +288,10 @@ Aap neeche diye gaye button se tamam **${filtered.length} files** ka **Official 
     // 2. PENSION QUERY
     if (q.includes("pension") || q.includes("pinshen") || q.includes("retired")) {
       const filtered = allRecords.filter(r => {
-        const main = (r.main_category || "").toLowerCase();
-        const sub = (r.sub_category || "").toLowerCase();
+        const main = getMainCat(r);
+        const sub = getSubCat(r);
         const subj = (r.subject || "").toLowerCase();
-        return main === "pension" || sub.includes("pension") || subj.includes("pension") || sub.includes("gratuity");
+        return main === "pension" || main.includes("employee") && sub.includes("pension") || sub.includes("pension") || subj.includes("pension") || sub.includes("gratuity");
       });
 
       let totalAmount = 0;
@@ -262,10 +324,10 @@ Neeche diye gaye button se tamam **${filtered.length} files** ka **Official PDF 
     // 3. MEDICAL QUERY
     if (q.includes("medical") || q.includes("ilaj") || q.includes("hospital")) {
       const filtered = allRecords.filter(r => {
-        const main = (r.main_category || "").toLowerCase();
-        const sub = (r.sub_category || "").toLowerCase();
+        const main = getMainCat(r);
+        const sub = getSubCat(r);
         const subj = (r.subject || "").toLowerCase();
-        return main === "medical" || sub.includes("medical") || subj.includes("medical");
+        return main === "medical" || main.includes("employee") && sub.includes("medical") || sub.includes("medical") || subj.includes("medical");
       });
 
       let totalAmount = 0;
@@ -287,8 +349,8 @@ Poori list dekhne aur print karne ke liye **Download PDF** par click karein.`;
     // 4. POL BILLS / FUEL
     if (q.includes("pol") || q.includes("fuel") || q.includes("petrol") || q.includes("diesel")) {
       const filtered = allRecords.filter(r => {
-        const main = (r.main_category || "").toLowerCase();
-        const sub = (r.sub_category || "").toLowerCase();
+        const main = getMainCat(r);
+        const sub = getSubCat(r);
         const subj = (r.subject || "").toLowerCase();
         return main.includes("pol") || sub.includes("pol") || subj.includes("fuel") || subj.includes("petrol");
       });
@@ -314,7 +376,7 @@ Poori list dekhne aur print karne ke liye **Download PDF** par click karein.`;
 
       allRecords.forEach(r => {
         if (r.amount && !isNaN(Number(r.amount))) totalAmount += Number(r.amount);
-        const cat = (r.main_category || "Other").toUpperCase();
+        const cat = (getMainCat(r) || "other").toUpperCase();
         catCount[cat] = (catCount[cat] || 0) + 1;
       });
 
@@ -352,7 +414,10 @@ Aap kisi bhi specific category ya file number ke baare mein mazeed tafseelat poo
       const party = (r.party_name || r.received_from || "").toLowerCase();
       const subj = (r.subject || "").toLowerCase();
       const markTo = (r.mark_to || "").toLowerCase();
-      const emp = (r.emp_name || "").toLowerCase();
+      const emp = ((r as any).emp_name || "").toLowerCase();
+      const empNo = ((r as any).emp_no || (r as any).employee_number || "").toLowerCase();
+      const cat = getMainCat(r);
+      const sub = getSubCat(r);
 
       return cleanTokens.some(tok => 
         cfo.includes(tok) || 
@@ -360,25 +425,30 @@ Aap kisi bhi specific category ya file number ke baare mein mazeed tafseelat poo
         party.includes(tok) || 
         subj.includes(tok) || 
         markTo.includes(tok) ||
-        emp.includes(tok)
+        emp.includes(tok) ||
+        empNo.includes(tok) ||
+        cat.includes(tok) ||
+        sub.includes(tok)
       );
     });
 
     if (matchedRecords.length > 0) {
       // If exact 1 match or specific file inquiry
-      if (matchedRecords.length === 1 || cleanTokens.some(t => t.startsWith("cfo") || t.startsWith("dk") || /\d{3,}/.test(t))) {
+      if (matchedRecords.length === 1 || cleanTokens.some(t => t.startsWith("cfo") || t.startsWith("dk") || t.startsWith("rc") || /\d{3,}/.test(t))) {
         const f = matchedRecords[0];
+        const fMainCat = getMainCat(f) || 'N/A';
+        const fSubCat = getSubCat(f);
         const responseText = `File record mil gaya hai:
 
 📌 **File Details:**
 - **CFO Diary No:** \`${f.cfo_diary_number || 'N/A'}\`
 - **Receiving No:** \`${f.receiving_number || 'N/A'}\`
 - **Party / Vendor:** **${f.party_name || f.received_from || 'N/A'}**
-- **Category:** ${f.main_category || 'N/A'} ${f.sub_category ? `(${f.sub_category})` : ''}
+- **Category:** ${fMainCat.toUpperCase()} ${fSubCat ? `(${fSubCat})` : ''}
 - **Subject:** ${f.subject || 'N/A'}
 - **Amount:** **PKR ${f.amount ? Number(f.amount).toLocaleString('en-US') : '0'}**
 - **Current Location / Mark To:** 🏢 **${f.mark_to || f.status || 'CFO Office'}**
-- **Date Registered:** ${f.registration_date || f.inward_date || 'N/A'}
+- **Date Registered:** ${f.registration_date || f.inward_date || (f as any).created_at || 'N/A'}
 
 Aap is file ka **Official Stamped PDF Report** ya **Excel Record** foran download kar sakte hain!`;
 
@@ -508,7 +578,7 @@ Neeche table mein records mojood hain. Official document ke liye **Download PDF*
         r.cfo_diary_number || "-",
         r.receiving_number || "-",
         r.party_name || r.received_from || "-",
-        r.main_category || "-",
+        (r.main_category || (r as any).mainCategory || "-").toUpperCase(),
         (r.subject || "-").slice(0, 32),
         r.amount ? Number(r.amount).toLocaleString('en-US') : "-",
         r.mark_to || r.status || "Registered"
@@ -589,8 +659,8 @@ Neeche table mein records mojood hain. Official document ke liye **Download PDF*
         "Receiving No": r.receiving_number || "",
         "Inward Date": r.inward_date || "",
         "Received From / Vendor": r.received_from || r.party_name || "",
-        "Category": r.main_category || "",
-        "Sub Category": r.sub_category || "",
+        "Category": ((r.main_category || (r as any).mainCategory || "")).toUpperCase(),
+        "Sub Category": (r.sub_category || (r as any).subCategory || ""),
         "Subject": r.subject || "",
         "Amount (PKR)": r.amount || 0,
         "Current Status": r.status || "",
@@ -691,7 +761,7 @@ Neeche table mein records mojood hain. Official document ke liye **Download PDF*
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-bold text-slate-900 dark:text-slate-100">KWSC AI Assistant</h1>
               <Badge variant="outline" className="text-xs bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-300">
-                Live Supabase Connected
+                {totalDbRecords > 0 ? `${totalDbRecords.toLocaleString()} Records Indexed` : 'Live Database Connected'}
               </Badge>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
