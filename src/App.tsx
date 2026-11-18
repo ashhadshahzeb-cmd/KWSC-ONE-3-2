@@ -34,6 +34,7 @@ import Contingencies from "./pages/book-section/Contingencies";
 import ChequeRecord from "./pages/book-section/ChequeRecord";
 import BillDispatch from "./pages/book-section/BillDispatch";
 import FileTracking from "./pages/book-section/FileTracking";
+import AskAI from "./pages/AskAI";
 import FileRecordDetail from "./pages/book-section/FileRecordDetail";
 import TransferAdvice from "./pages/book-section/TransferAdvice";
 import TransferAdviceRecords from "./pages/book-section/TransferAdviceRecords";
@@ -183,6 +184,7 @@ const App = () => {
                           <Route path="/book-section/contingencies" element={<Contingencies />} />
                           <Route path="/book-section/bill-dispatch" element={<BillDispatch />} />
                           <Route path="/book-section/file-tracking" element={<FileTracking />} />
+                          <Route path="/ask-ai" element={<AskAI />} />
                           <Route path="/book-section/transfer-advice" element={<TransferAdvice />} />
                           <Route path="/book-section/transfer-advice-records" element={<TransferAdviceRecords />} />
                           <Route path="/book-section/file-record/:receivingNo" element={<FileRecordDetail />} />
