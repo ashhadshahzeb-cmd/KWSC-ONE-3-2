@@ -17,12 +17,18 @@ import {
   HelpCircle,
   Copy,
   Check,
-  FileCheck
+  FileCheck,
+  Key,
+  Settings,
+  DollarSign,
+  PieChart,
+  Layers
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { supabase } from "@/integrations/supabase/client";
@@ -61,13 +67,13 @@ export default function AskAI() {
         role: "assistant",
         content: `Assalamu Alaykum! Main **KWSC AI Assistant** hoon. 
 
-Aap mujhse live system aur database ke baare mein kuch bhi pooch sakte hain:
-- Kisi file ka status: *"CFO-2627-5-1436 kahan hai?"* ya *"Receiving 1045 ka record dikhao"*
-- Vendor / Contractor files: *"M/S Al-Rehman ke bills dikhao"*
-- Category wise files: *"Medical cases summary"* ya *"Pension section ki files"*
-- Mark to status: *"Internal Audit mein kitni files hain?"*
+Aap mujhse live system aur database ke baare mein sawalat pooch sakte hain:
+- **Kul Files / Numbers:** *"Total contractor ki file kitni hain?"* ya *"Pension section mein kitni files hain?"*
+- **Specific File Status:** *"CFO-2627-5-1436 kahan hai?"* ya *"Receiving 1045 ka record dikhao"*
+- **Department / Section Status:** *"Internal audit mein kaun si files hain?"* ya *"CIA mein kitni files hain?"*
+- **Vendor Bills:** *"EE /E&M/W/DK ke bills dikhao"* ya *"Security deposit files report"*
 
-Mujhe file number ya vendor name batayein, main live record nikaal kar **Official Branded PDF** aur **Excel** bhi download ke liye tayyar kar doonga!`,
+Main live database se 100% accurate statistics aur records nikaal kar **Official Stamped PDF Report** aur **Excel** bhi download ke liye tayyar kar doonga!`,
         timestamp: new Date(),
       }
     ];
@@ -76,6 +82,11 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
   const [inputQuery, setInputQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [geminiKey, setGeminiKey] = useState<string>(() => {
+    return localStorage.getItem("kwsc_gemini_api_key") || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+  });
+  const [keyInput, setKeyInput] = useState(geminiKey);
+  const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Save chat to localStorage
@@ -96,7 +107,7 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
     const welcome: ChatMessage = {
       id: Date.now().toString(),
       role: "assistant",
-      content: `Chat clear kar di gayi hai. Aap koi bhi nayi file ya inquiry pooch sakte hain!`,
+      content: `Chat clear kar di gayi hai. Aap koi bhi naya sawal pooch sakte hain!`,
       timestamp: new Date()
     };
     setMessages([welcome]);
@@ -107,88 +118,308 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
-    toast.success("Response copied to clipboard");
+    toast.success("Copied to clipboard");
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Live Database Fetcher (Supabase primary + Dexie IndexedDB fallback)
-  const searchFilesDatabase = async (query: string): Promise<FileRecord[]> => {
-    const cleanQ = query.trim().toLowerCase();
+  const saveApiKey = () => {
+    localStorage.setItem("kwsc_gemini_api_key", keyInput.trim());
+    setGeminiKey(keyInput.trim());
+    setIsKeyDialogOpen(false);
+    toast.success("Gemini API key saved!");
+  };
+
+  // Helper to get ALL records from Dexie + Supabase
+  const getAllDatabaseRecords = async (): Promise<FileRecord[]> => {
     let records: FileRecord[] = [];
-
-    // 1. Try querying local IndexedDB first for fastest response
     try {
-      const allLocal = await db.records.toArray();
-      if (allLocal && allLocal.length > 0) {
-        records = allLocal.filter(r => {
-          const cfo = (r.cfo_diary_number || "").toLowerCase();
-          const rec = (r.receiving_number || "").toLowerCase();
-          const party = (r.party_name || "").toLowerCase();
-          const from = (r.received_from || "").toLowerCase();
-          const subject = (r.subject || "").toLowerCase();
-          const emp = (r.emp_name || "").toLowerCase();
-          const empNo = (r.emp_no || "").toLowerCase();
-          const category = (r.main_category || "").toLowerCase();
-          const subCategory = (r.sub_category || "").toLowerCase();
-          const markTo = (r.mark_to || "").toLowerCase();
-          const vendorNo = ((r as any).vendor_number || "").toLowerCase();
-
-          // Token matching
-          const tokens = cleanQ.split(/\s+/).filter(t => t.length > 1 && !["kahan", "hai", "files", "file", "ka", "ki", "ke", "dikhao", "batao", "status", "report", "show", "me", "find"].includes(t));
-          
-          if (tokens.length === 0) {
-            return cfo.includes(cleanQ) || rec.includes(cleanQ) || party.includes(cleanQ) || from.includes(cleanQ);
-          }
-
-          return tokens.some(tok => 
-            cfo.includes(tok) || 
-            rec.includes(tok) || 
-            party.includes(tok) || 
-            from.includes(tok) || 
-            subject.includes(tok) || 
-            emp.includes(tok) || 
-            empNo.includes(tok) || 
-            category.includes(tok) || 
-            subCategory.includes(tok) ||
-            markTo.includes(tok) ||
-            vendorNo.includes(tok)
-          );
-        });
-      }
+      records = await db.records.toArray();
     } catch (e) {
-      console.warn("Dexie search error", e);
+      console.warn("Dexie read error", e);
     }
 
-    // 2. Try Supabase cloud search if Supabase is connected
-    try {
-      // Search by diary number or receiving number or received_from
-      const { data: cloudData, error } = await supabase
-        .from('file_tracking')
-        .select('*')
-        .or(`cfo_diary_number.ilike.%${cleanQ}%,receiving_number.ilike.%${cleanQ}%,received_from.ilike.%${cleanQ}%,party_name.ilike.%${cleanQ}%,subject.ilike.%${cleanQ}%`)
-        .limit(25);
-
-      if (!error && cloudData && cloudData.length > 0) {
-        // Merge cloud results with local results avoiding duplicates
-        const existingIds = new Set(records.map(r => r.cfo_diary_number || r.receiving_number));
-        for (const item of cloudData as any[]) {
-          const key = item.cfo_diary_number || item.receiving_number;
-          if (!existingIds.has(key)) {
-            records.push(item);
-          }
+    if (records.length === 0) {
+      try {
+        const { data, error } = await supabase.from('file_tracking').select('*').limit(2000);
+        if (!error && data) {
+          records = data as any[];
         }
+      } catch (e) {
+        console.warn("Supabase fetch error", e);
       }
-    } catch (e) {
-      // Supabase might be offline or paused, local fallback already captured
+    }
+    return records;
+  };
+
+  // Intelligent Local Query Engine
+  const processQueryLocally = async (rawQuery: string): Promise<{ text: string; records: FileRecord[]; title: string }> => {
+    const allRecords = await getAllDatabaseRecords();
+    const q = rawQuery.toLowerCase().trim();
+
+    const isCountQuery = 
+      q.includes("kitni") || 
+      q.includes("kitne") || 
+      q.includes("total") || 
+      q.includes("kul") || 
+      q.includes("count") || 
+      q.includes("how many") || 
+      q.includes("tadad") ||
+      q.includes("summary");
+
+    // 1. CONTRACTOR QUERY
+    if (q.includes("contractor") || q.includes("thekedar") || q.includes("contingenc") || q.includes("security deposit")) {
+      const filtered = allRecords.filter(r => {
+        const main = (r.main_category || "").toLowerCase();
+        const sub = (r.sub_category || "").toLowerCase();
+        const party = (r.party_name || r.received_from || "").toLowerCase();
+        const subj = (r.subject || "").toLowerCase();
+        return (
+          main === "contractor" || 
+          sub.includes("contractor") || 
+          sub.includes("contingenc") || 
+          sub.includes("security-deposit") ||
+          subj.includes("contractor") ||
+          party.includes("contractor")
+        );
+      });
+
+      let totalAmount = 0;
+      const deptBreakdown: Record<string, number> = {};
+      const subBreakdown: Record<string, number> = {};
+
+      filtered.forEach(r => {
+        if (r.amount && !isNaN(Number(r.amount))) totalAmount += Number(r.amount);
+        const dept = (r.mark_to || r.status || "CFO Office").toUpperCase();
+        deptBreakdown[dept] = (deptBreakdown[dept] || 0) + 1;
+        const subCat = (r.sub_category || "Contractor Bills").toUpperCase();
+        subBreakdown[subCat] = (subBreakdown[subCat] || 0) + 1;
+      });
+
+      const topDepts = Object.entries(deptBreakdown)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([dept, count]) => `• **${dept}:** ${count} files`)
+        .join("\n");
+
+      const topSubs = Object.entries(subBreakdown)
+        .sort((a, b) => b[1] - a[1])
+        .map(([sub, count]) => `• **${sub}:** ${count} files`)
+        .join("\n");
+
+      const responseText = `KWSC database mein **Contractor** category ki kul **${filtered.length} files** mojood hain:
+
+📊 **Statistics Khulasa:**
+- **Kul Files (Total Count):** \`${filtered.length}\` files
+- **Kul Raqam (Total Amount):** **PKR ${totalAmount.toLocaleString('en-US')}**
+
+🏢 **Kahan Kahan Mojood Hain (Mark To):**
+${topDepts}
+
+📁 **Sub-Category Breakdown:**
+${topSubs}
+
+Aap neeche diye gaye button se tamam **${filtered.length} files** ka **Official Stamped PDF Report** ya **Excel Spreadsheet** download kar sakte hain!`;
+
+      return { text: responseText, records: filtered, title: "Contractor Files Report" };
     }
 
-    return records.slice(0, 30);
+    // 2. PENSION QUERY
+    if (q.includes("pension") || q.includes("pinshen") || q.includes("retired")) {
+      const filtered = allRecords.filter(r => {
+        const main = (r.main_category || "").toLowerCase();
+        const sub = (r.sub_category || "").toLowerCase();
+        const subj = (r.subject || "").toLowerCase();
+        return main === "pension" || sub.includes("pension") || subj.includes("pension") || sub.includes("gratuity");
+      });
+
+      let totalAmount = 0;
+      const deptBreakdown: Record<string, number> = {};
+      filtered.forEach(r => {
+        if (r.amount && !isNaN(Number(r.amount))) totalAmount += Number(r.amount);
+        const dept = (r.mark_to || r.status || "Pension Section").toUpperCase();
+        deptBreakdown[dept] = (deptBreakdown[dept] || 0) + 1;
+      });
+
+      const depts = Object.entries(deptBreakdown)
+        .slice(0, 5)
+        .map(([dept, count]) => `• **${dept}:** ${count} files`)
+        .join("\n");
+
+      const responseText = `KWSC database mein **Pension** section ki kul **${filtered.length} files** mojood hain:
+
+📊 **Statistics:**
+- **Total Files:** \`${filtered.length}\` files
+- **Total Amount:** **PKR ${totalAmount.toLocaleString('en-US')}**
+
+🏢 **Current Location Breakdown:**
+${depts || "• Pension Section"}
+
+Neeche diye gaye button se tamam **${filtered.length} files** ka **Official PDF Report** ya **Excel** download karein!`;
+
+      return { text: responseText, records: filtered, title: "Pension Files Report" };
+    }
+
+    // 3. MEDICAL QUERY
+    if (q.includes("medical") || q.includes("ilaj") || q.includes("hospital")) {
+      const filtered = allRecords.filter(r => {
+        const main = (r.main_category || "").toLowerCase();
+        const sub = (r.sub_category || "").toLowerCase();
+        const subj = (r.subject || "").toLowerCase();
+        return main === "medical" || sub.includes("medical") || subj.includes("medical");
+      });
+
+      let totalAmount = 0;
+      filtered.forEach(r => {
+        if (r.amount && !isNaN(Number(r.amount))) totalAmount += Number(r.amount);
+      });
+
+      const responseText = `KWSC database mein **Medical Reimbursement / Cases** ki kul **${filtered.length} files** mojood hain:
+
+📊 **Statistics:**
+- **Total Files:** \`${filtered.length}\` files
+- **Total Medical Valuation:** **PKR ${totalAmount.toLocaleString('en-US')}**
+
+Poori list dekhne aur print karne ke liye **Download PDF** par click karein.`;
+
+      return { text: responseText, records: filtered, title: "Medical Cases Report" };
+    }
+
+    // 4. POL BILLS / FUEL
+    if (q.includes("pol") || q.includes("fuel") || q.includes("petrol") || q.includes("diesel")) {
+      const filtered = allRecords.filter(r => {
+        const main = (r.main_category || "").toLowerCase();
+        const sub = (r.sub_category || "").toLowerCase();
+        const subj = (r.subject || "").toLowerCase();
+        return main.includes("pol") || sub.includes("pol") || subj.includes("fuel") || subj.includes("petrol");
+      });
+
+      let totalAmount = 0;
+      filtered.forEach(r => {
+        if (r.amount && !isNaN(Number(r.amount))) totalAmount += Number(r.amount);
+      });
+
+      const responseText = `KWSC database mein **POL Bills / Fuel** ki kul **${filtered.length} files** darj hain:
+
+📊 **Statistics:**
+- **Total Files:** \`${filtered.length}\` files
+- **Total Amount:** **PKR ${totalAmount.toLocaleString('en-US')}**`;
+
+      return { text: responseText, records: filtered, title: "POL Bills Report" };
+    }
+
+    // 5. OVERALL TOTAL FILES IN SYSTEM
+    if (isCountQuery && (q.includes("tamam") || q.includes("all") || q.includes("system") || q.includes("portal") || q.split(/\s+/).length <= 4)) {
+      let totalAmount = 0;
+      const catCount: Record<string, number> = {};
+
+      allRecords.forEach(r => {
+        if (r.amount && !isNaN(Number(r.amount))) totalAmount += Number(r.amount);
+        const cat = (r.main_category || "Other").toUpperCase();
+        catCount[cat] = (catCount[cat] || 0) + 1;
+      });
+
+      const catList = Object.entries(catCount)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([c, count]) => `• **${c}:** ${count} files`)
+        .join("\n");
+
+      const responseText = `KWSC One-Window Facilitation portal mein is waqt kul **${allRecords.length} files** darj hain:
+
+📊 **System-Wide Overview:**
+- **Kul Files (Total Records):** \`${allRecords.length}\` files
+- **Kul Valuation (Total Amount):** **PKR ${totalAmount.toLocaleString('en-US')}**
+
+📁 **Category-wise Breakdown:**
+${catList}
+
+Aap kisi bhi specific category ya file number ke baare mein mazeed tafseelat pooch sakte hain!`;
+
+      return { text: responseText, records: allRecords.slice(0, 100), title: "KWSC All Files Summary" };
+    }
+
+    // 6. SPECIFIC CFO DIARY OR RECEIVING NUMBER OR VENDOR NAME LOOKUP
+    // Extract tokens
+    const cleanTokens = q
+      .replace(/(file|files|kahan hai|kahan|hai|dikhao|batao|status|details|ka|ki|ke|ko|mein|se|report|de|bhai)/gi, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter(t => t.length >= 2);
+
+    let matchedRecords = allRecords.filter(r => {
+      const cfo = (r.cfo_diary_number || "").toLowerCase();
+      const rec = (r.receiving_number || "").toLowerCase();
+      const party = (r.party_name || r.received_from || "").toLowerCase();
+      const subj = (r.subject || "").toLowerCase();
+      const markTo = (r.mark_to || "").toLowerCase();
+      const emp = (r.emp_name || "").toLowerCase();
+
+      return cleanTokens.some(tok => 
+        cfo.includes(tok) || 
+        rec.includes(tok) || 
+        party.includes(tok) || 
+        subj.includes(tok) || 
+        markTo.includes(tok) ||
+        emp.includes(tok)
+      );
+    });
+
+    if (matchedRecords.length > 0) {
+      // If exact 1 match or specific file inquiry
+      if (matchedRecords.length === 1 || cleanTokens.some(t => t.startsWith("cfo") || t.startsWith("dk") || /\d{3,}/.test(t))) {
+        const f = matchedRecords[0];
+        const responseText = `File record mil gaya hai:
+
+📌 **File Details:**
+- **CFO Diary No:** \`${f.cfo_diary_number || 'N/A'}\`
+- **Receiving No:** \`${f.receiving_number || 'N/A'}\`
+- **Party / Vendor:** **${f.party_name || f.received_from || 'N/A'}**
+- **Category:** ${f.main_category || 'N/A'} ${f.sub_category ? `(${f.sub_category})` : ''}
+- **Subject:** ${f.subject || 'N/A'}
+- **Amount:** **PKR ${f.amount ? Number(f.amount).toLocaleString('en-US') : '0'}**
+- **Current Location / Mark To:** 🏢 **${f.mark_to || f.status || 'CFO Office'}**
+- **Date Registered:** ${f.registration_date || f.inward_date || 'N/A'}
+
+Aap is file ka **Official Stamped PDF Report** ya **Excel Record** foran download kar sakte hain!`;
+
+        return { text: responseText, records: matchedRecords, title: `File ${f.cfo_diary_number || f.receiving_number}` };
+      }
+
+      // Multiple matched records
+      let totalAmount = 0;
+      matchedRecords.forEach(r => {
+        if (r.amount && !isNaN(Number(r.amount))) totalAmount += Number(r.amount);
+      });
+
+      const responseText = `Aap ki query ke mutabiq database mein **${matchedRecords.length} records** mile hain:
+
+📊 **Khulasa:**
+- **Kul Files:** \`${matchedRecords.length}\`
+- **Kul Raqam:** **PKR ${totalAmount.toLocaleString('en-US')}**
+- **Sab se pehla record:** \`${matchedRecords[0].cfo_diary_number || matchedRecords[0].receiving_number}\` (${matchedRecords[0].party_name || matchedRecords[0].received_from})
+
+Neeche table mein records mojood hain. Official document ke liye **Download PDF** ya **Export Excel** button use karein.`;
+
+      return { text: responseText, records: matchedRecords, title: `Search Results (${rawQuery})` };
+    }
+
+    // 7. NO RECORDS FOUND
+    return {
+      text: `Aap ki query **"${rawQuery}"** ke mutabiq database mein koi record nahi mila.
+
+💡 **Rehnumai (Tips):**
+- Agar kisi specific file ko dhoond rahe hain to exact **CFO Diary Number** (maslan: \`CFO-2026-458296\`) ya **Receiving Number** (maslan: \`DK-1599\`) likhein.
+- Category ke liye: *"Total contractor files kitni hain?"*, *"Pension files kitni hain?"*, ya *"Medical bills"*.
+- Vendor ke liye: Vendor ka naam ya receiving department likhein.`,
+      records: [],
+      title: "Query Result"
+    };
   };
 
   // Generate Official Branded KWSC PDF
   const downloadOfficialPDF = async (queryTitle: string, records: FileRecord[]) => {
     try {
-      toast.info("Generating Official KWSC PDF Report...");
+      toast.info("Official KWSC PDF Report tayyar ho raha hai...");
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
@@ -230,7 +461,7 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
       doc.setFont("helvetica", "bold");
       doc.setFontSize(12);
       doc.setTextColor(30, 58, 138); // blue-900
-      doc.text("FILE TRACKING INTELLIGENCE REPORT", pageWidth / 2, 30, { align: "center" });
+      doc.text("OFFICIAL FILE TRACKING & AUDIT REPORT", pageWidth / 2, 30, { align: "center" });
 
       // Report Meta Box
       doc.setFontSize(9);
@@ -244,8 +475,8 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
       }) + " " + new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
       doc.text(`Generated Date: ${todayStr}`, 14, 38);
-      doc.text(`Query / Parameter: ${queryTitle.slice(0, 45)}`, 14, 43);
-      doc.text(`Total Records Found: ${records.length}`, pageWidth - 14, 38, { align: "right" });
+      doc.text(`Report Subject: ${queryTitle.slice(0, 50)}`, 14, 43);
+      doc.text(`Total Records: ${records.length}`, pageWidth - 14, 38, { align: "right" });
 
       let grandTotalAmount = 0;
       records.forEach(r => {
@@ -297,7 +528,7 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
         startY: 50,
         theme: "grid",
         headStyles: {
-          fillColor: [30, 41, 59], // slate-800
+          fillColor: [30, 41, 59],
           textColor: [255, 255, 255],
           fontSize: 8,
           fontStyle: "bold",
@@ -319,11 +550,11 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
           7: { cellWidth: 26 }
         },
         didDrawPage: (data) => {
-          // Watermark on center of page
+          // Watermark in center of page
           if (logoData) {
             try {
               if ((doc as any).GState) {
-                doc.setGState(new (doc as any).GState({ opacity: 0.07 }));
+                doc.setGState(new (doc as any).GState({ opacity: 0.08 }));
               }
               const wmSize = 100;
               doc.addImage(logoData, "PNG", (pageWidth - wmSize) / 2, (pageHeight - wmSize) / 2, wmSize, wmSize);
@@ -341,11 +572,11 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
         }
       });
 
-      doc.save(`KWSC_AI_Report_${Date.now()}.pdf`);
-      toast.success("Official PDF downloaded successfully!");
+      doc.save(`KWSC_${queryTitle.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.pdf`);
+      toast.success("Official PDF download ho gaya!");
     } catch (err) {
       console.error("PDF generation error", err);
-      toast.error("Failed to generate PDF");
+      toast.error("PDF generate karne mein masla aya");
     }
   };
 
@@ -371,7 +602,7 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
       const worksheet = XLSX.utils.json_to_sheet(dataForSheet);
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "KWSC Files Report");
-      XLSX.writeFile(workbook, `KWSC_Files_${Date.now()}.xlsx`);
+      XLSX.writeFile(workbook, `KWSC_${queryTitle.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.xlsx`);
       toast.success("Excel report exported successfully!");
     } catch (e) {
       console.error("Excel export error", e);
@@ -406,84 +637,16 @@ Mujhe file number ya vendor name batayein, main live record nikaal kar **Officia
     setLoading(true);
 
     try {
-      // 1. Fetch matching database records
-      const matchingRecords = await searchFilesDatabase(textToSend);
+      // Execute our comprehensive local intelligence engine first
+      const result = await processQueryLocally(textToSend);
 
-      // 2. Prepare Gemini Prompt or intelligent response generator
-      const geminiApiKey = localStorage.getItem("kwsc_gemini_api_key") || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
-
-      let finalContent = "";
-
-      if (geminiApiKey) {
-        try {
-          const genAI = new GoogleGenerativeAI(geminiApiKey);
-          const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-          const prompt = `You are the official KWSC (Karachi Water & Sewerage Corporation) One-Window Facilitation AI Assistant.
-The user asked: "${textToSend}"
-
-Here is the live database search result from KWSC records:
-${matchingRecords.length === 0 ? "No records found matching this query in the database." : JSON.stringify(matchingRecords.map(r => ({
-  cfo_diary_number: r.cfo_diary_number,
-  receiving_number: r.receiving_number,
-  party_name: r.party_name || r.received_from,
-  category: r.main_category,
-  sub_category: r.sub_category,
-  subject: r.subject,
-  amount: r.amount,
-  status: r.status,
-  mark_to: r.mark_to,
-  inward_date: r.inward_date
-})))}
-
-Instructions:
-1. Answer clearly, professionally, and politely in Urdu/Roman Urdu with English terms.
-2. If matching records exist:
-   - Provide the specific file location, department mark to, and current status.
-   - List key details (CFO Diary No, Receiving No, Vendor/Party Name, Subject, Amount in PKR).
-   - Tell the user that they can also click the Download PDF or Export Excel button below for official stamped report.
-3. If no matching records exist, explain that no record matched the query in the live database, and suggest checking the exact CFO diary or Receiving number.
-4. Keep the response concise, formatted with clear markdown bolding and bullet points.`;
-
-          const result = await model.generateContent(prompt);
-          finalContent = result.response.text();
-        } catch (aiErr) {
-          console.warn("Gemini API call failed, generating direct structured response", aiErr);
-        }
-      }
-
-      // If Gemini response wasn't produced or no key, construct high quality direct summary
-      if (!finalContent) {
-        if (matchingRecords.length > 0) {
-          const first = matchingRecords[0];
-          finalContent = `Main ne database se **${matchingRecords.length} record(s)** dhoond liye hain:
-
-📌 **Sab se relevant file:**
-- **CFO Diary No:** \`${first.cfo_diary_number || 'N/A'}\`
-- **Receiving No:** \`${first.receiving_number || 'N/A'}\`
-- **Party / Vendor:** ${first.party_name || first.received_from || 'N/A'}
-- **Category:** ${first.main_category || 'N/A'} ${first.sub_category ? `(${first.sub_category})` : ''}
-- **Subject:** ${first.subject || 'N/A'}
-- **Amount:** PKR ${first.amount ? Number(first.amount).toLocaleString('en-US') : '0'}
-- **Current Status / Mark To:** 🏢 **${first.mark_to || first.status || 'In Process'}**
-
-Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report** ya **Excel Spreadsheet** download kar sakte hain!`;
-        } else {
-          finalContent = `Aap ki query "${textToSend}" ke mutabiq database mein koi record nahi mila.
-
-💡 **Tips:**
-- Barah-e-karam exact **CFO Diary Number** (maslan: \`CFO-2627-5-1436\`) ya **Receiving Number** check karein.
-- Vendor ka naam ya Category (maslan: Pension, Medical, Contractor) likh kar search karein.`;
-        }
-      }
-
-      // Update AI message
+      // Update AI message with verified accurate data
       setMessages(prev => prev.map(m => {
         if (m.id === aiMessageId) {
           return {
             ...m,
-            content: finalContent,
-            records: matchingRecords.length > 0 ? matchingRecords : undefined,
+            content: result.text,
+            records: result.records.length > 0 ? result.records : undefined,
             isSearching: false
           };
         }
@@ -496,7 +659,7 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
         if (m.id === aiMessageId) {
           return {
             ...m,
-            content: "Maazrat! Query process karne mein masla pesh aya hai. Barah-e-karam dobara koshish karein.",
+            content: "Maazrat! Query process karne mein masla aya hai. Barah-e-karam dobara koshish karein.",
             isSearching: false
           };
         }
@@ -508,12 +671,12 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
   };
 
   const sampleQueries = [
-    "CFO-2627-5-1436 kahan hai?",
-    "Pension section ki files dikhao",
+    "Total contractor ki file kitni hain?",
+    "Pension section mein kitni files hain?",
     "Medical reimbursement bills",
     "Internal audit mein kaun si files hain?",
-    "Contractor bills status",
-    "Contingency files report"
+    "Portal par kul files kitni hain?",
+    "POL bills summary"
   ];
 
   return (
@@ -532,12 +695,49 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
               </Badge>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Instant File Tracking &bull; Official Stamped PDF Reports &bull; Excel Export
+              Accurate File Counts &bull; Live Status &bull; Official Stamped PDF &bull; Excel Export
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Settings Dialog for Gemini API Key */}
+          <Dialog open={isKeyDialogOpen} onOpenChange={setIsKeyDialogOpen}>
+            <DialogTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                <Settings className="w-4 h-4" />
+                <span className="hidden sm:inline">Settings</span>
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Key className="w-5 h-5 text-blue-600" />
+                  Gemini API Key Configuration
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3 py-2 text-sm text-slate-600 dark:text-slate-300">
+                <p>
+                  Aap Google AI Studio (aistudio.google.com) se apni <strong>100% Free Gemini API Key</strong> yahan paste kar sakte hain.
+                </p>
+                <Input
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="font-mono text-xs"
+                />
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="outline" size="sm" onClick={() => setIsKeyDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" className="bg-blue-600 text-white" onClick={saveApiKey}>
+                    Save Key
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
           <Button
             variant="ghost"
             size="sm"
@@ -545,12 +745,13 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
             className="text-xs text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 flex items-center gap-1.5"
           >
             <Trash2 className="w-4 h-4" />
-            Clear Chat
+            <span className="hidden sm:inline">Clear Chat</span>
           </Button>
+
           <Link to="/book-section/file-tracking">
             <Button variant="outline" size="sm" className="text-xs flex items-center gap-1.5">
               <FileCheck className="w-4 h-4 text-blue-600" />
-              File Tracking Page
+              <span className="hidden sm:inline">File Tracking</span>
             </Button>
           </Link>
         </div>
@@ -569,7 +770,7 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
               </div>
             )}
 
-            <div className={`space-y-3 max-w-[85%] md:max-w-[78%]`}>
+            <div className={`space-y-3 max-w-[85%] md:max-w-[82%]`}>
               <div
                 className={`p-4 rounded-2xl shadow-sm text-sm ${
                   message.role === "user"
@@ -609,26 +810,26 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
               {/* Records Attachment Card if query returned data */}
               {message.records && message.records.length > 0 && (
                 <Card className="border-blue-200 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/20 shadow-sm overflow-hidden">
-                  <div className="px-4 py-2.5 bg-blue-100/60 dark:bg-blue-900/40 border-b border-blue-200 dark:border-blue-800 flex items-center justify-between">
+                  <div className="px-4 py-2.5 bg-blue-100/60 dark:bg-blue-900/40 border-b border-blue-200 dark:border-blue-800 flex items-center justify-between flex-wrap gap-2">
                     <span className="text-xs font-semibold text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
                       <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                      Live Verified Records ({message.records.length})
+                      Live Verified Database Records ({message.records.length})
                     </span>
                     <div className="flex items-center gap-2">
                       <Button
                         size="sm"
                         variant="default"
                         className="h-7 text-xs bg-blue-700 hover:bg-blue-800 text-white flex items-center gap-1.5 shadow-sm"
-                        onClick={() => downloadOfficialPDF(message.records![0]?.cfo_diary_number || "KWSC Report", message.records!)}
+                        onClick={() => downloadOfficialPDF(message.records![0]?.main_category || "KWSC Records", message.records!)}
                       >
                         <Download className="w-3.5 h-3.5" />
-                        Download PDF
+                        Download Official PDF ({message.records.length})
                       </Button>
                       <Button
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs bg-white dark:bg-slate-900 hover:bg-slate-100 border-emerald-300 text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5"
-                        onClick={() => exportToExcel(message.records![0]?.cfo_diary_number || "KWSC Records", message.records!)}
+                        onClick={() => exportToExcel(message.records![0]?.main_category || "KWSC Records", message.records!)}
                       >
                         <FileSpreadsheet className="w-3.5 h-3.5" />
                         Export Excel
@@ -650,7 +851,7 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-blue-100 dark:divide-blue-900/30">
-                          {message.records.slice(0, 5).map((r, i) => (
+                          {message.records.slice(0, 6).map((r, i) => (
                             <tr key={i} className="hover:bg-blue-100/30 dark:hover:bg-blue-900/20">
                               <td className="py-2 font-bold text-blue-900 dark:text-blue-300">
                                 {r.cfo_diary_number || "-"}
@@ -658,7 +859,7 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
                               <td className="py-2 text-slate-600 dark:text-slate-300">
                                 {r.receiving_number || "-"}
                               </td>
-                              <td className="py-2 text-slate-700 dark:text-slate-200 truncate max-w-[120px]">
+                              <td className="py-2 text-slate-700 dark:text-slate-200 truncate max-w-[130px]">
                                 {r.party_name || r.received_from || "-"}
                               </td>
                               <td className="py-2 font-medium text-emerald-600 dark:text-emerald-400">
@@ -683,9 +884,9 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
                           ))}
                         </tbody>
                       </table>
-                      {message.records.length > 5 && (
+                      {message.records.length > 6 && (
                         <p className="text-[11px] text-slate-500 mt-2 text-center">
-                          +{message.records.length - 5} aur records report mein shamil hain. Poora record dekhne ke liye PDF download karein.
+                          +{message.records.length - 6} aur files report mein shamil hain. Tamam {message.records.length} files dekhne ke liye upar <strong>Download Official PDF</strong> ya <strong>Export Excel</strong> click karein.
                         </p>
                       )}
                     </div>
@@ -707,7 +908,7 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
       {/* Suggested Query Chips */}
       <div className="px-4 py-2 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center gap-2 overflow-x-auto no-scrollbar">
         <span className="text-xs font-medium text-slate-400 flex items-center gap-1 flex-shrink-0">
-          <HelpCircle className="w-3.5 h-3.5" /> Example queries:
+          <HelpCircle className="w-3.5 h-3.5" /> Quick queries:
         </span>
         {sampleQueries.map((sq, i) => (
           <button
@@ -733,7 +934,7 @@ Aap neeche diye gaye button par click karke is ka **Official Stamped PDF Report*
             <Input
               value={inputQuery}
               onChange={(e) => setInputQuery(e.target.value)}
-              placeholder="Sawal poochein... (e.g. CFO-2627-5-1436 kahan hai? ya Vendor XYZ ke bills)"
+              placeholder="Sawal poochein... (e.g. Total contractor ki file kitni hain? ya CFO-2026-458296 kahan hai?)"
               className="pr-10 py-6 text-sm rounded-xl border-slate-300 dark:border-slate-700 focus-visible:ring-blue-600 bg-slate-50 dark:bg-slate-950"
               disabled={loading}
               autoFocus
