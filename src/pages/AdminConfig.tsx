@@ -28,6 +28,7 @@ import {
   Eye,
   EyeOff,
   Fuel,
+  FilePlus,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -65,7 +66,7 @@ export default function AdminConfig() {
   const [authPassword, setAuthPassword] = useState('');
   const [showAuthPass, setShowAuthPass] = useState(false);
 
-  const { mainCategories, subCategories, sections, contractorAccounts, isMaintenanceMode, isGlobal2FAEnabled, isFileEditPasswordEnabled, isLoading, refetch } = useAppConfig();
+  const { mainCategories, subCategories, sections, contractorAccounts, isMaintenanceMode, isGlobal2FAEnabled, isFileEditPasswordEnabled, isNonAdminRegistrationOnly, isLoading, refetch } = useAppConfig();
   const [isTogglingMaintenance, setIsTogglingMaintenance] = useState(false);
   const [isTogglingSecurity, setIsTogglingSecurity] = useState(false);
 
@@ -336,7 +337,8 @@ export default function AdminConfig() {
       } else {
         await supabase.from('app_config' as any).insert({ config_type: 'system_setting', config_key: key, config_label: val, is_active: true, sort_order: 0 });
       }
-      toast.success(`${key === 'global_2fa_enabled' ? 'Global 2FA' : 'File Edit Password'} updated`);
+      const settingName = key === 'global_2fa_enabled' ? 'Global 2FA' : key === 'file_edit_password_enabled' ? 'File Edit Password' : 'Non-Admin Registration View';
+      toast.success(`${settingName} updated`);
       refetch();
     } catch (err: any) {
       toast.error(err.message || 'Failed to update security setting');
@@ -456,6 +458,24 @@ export default function AdminConfig() {
               onCheckedChange={(c) => handleToggleSecuritySetting('file_edit_password_enabled', c)}
               disabled={isTogglingSecurity}
               className="data-[state=checked]:bg-emerald-500"
+            />
+          </div>
+
+          <div className="flex items-center justify-between col-span-1 md:col-span-2 border-t border-white/5 pt-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
+                <FilePlus className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Regular Users: Registration Tab Only</h3>
+                <p className="text-xs text-white/50">When enabled, users other than Superadmin only see Registration in header. Disable to restore all tabs.</p>
+              </div>
+            </div>
+            <Switch 
+              checked={isNonAdminRegistrationOnly}
+              onCheckedChange={(c) => handleToggleSecuritySetting('non_admin_registration_only', c)}
+              disabled={isTogglingSecurity}
+              className="data-[state=checked]:bg-purple-500"
             />
           </div>
 

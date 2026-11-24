@@ -33,9 +33,14 @@ export interface FileRecord {
   history?: any[];
   registration_date?: string;
   print_date?: string;
+  budget_code?: string;
+  sub_budget_head?: string;
+  ddo_code?: string;
   department_number?: string;
   additional_mark_to?: string;
   fuel_station?: string;
+  parent_diary_number?: string; // Linked note sheet / parent file CFO Diary #
+  linked_file_id?: string; // UUID of parent file if linked
   file_image?: string; // base64 compressed JPEG of document photo
   file_images?: string[]; // Multiple document photos / scans
   // Local only fields for syncing

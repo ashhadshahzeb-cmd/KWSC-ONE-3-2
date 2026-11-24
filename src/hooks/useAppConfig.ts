@@ -20,13 +20,14 @@ interface AppConfigState {
   isMaintenanceMode: boolean;
   isGlobal2FAEnabled: boolean;
   isFileEditPasswordEnabled: boolean;
+  isNonAdminRegistrationOnly: boolean;
   isLoading: boolean;
   error: string | null;
   refetch: () => void;
 }
 
 // In-memory cache so every component doesn't re-fetch
-let cachedConfig: { mainCategories: AppConfigItem[]; subCategories: AppConfigItem[]; sections: AppConfigItem[]; contractorAccounts: AppConfigItem[]; isMaintenanceMode: boolean; isGlobal2FAEnabled: boolean; isFileEditPasswordEnabled: boolean } | null = null;
+let cachedConfig: { mainCategories: AppConfigItem[]; subCategories: AppConfigItem[]; sections: AppConfigItem[]; contractorAccounts: AppConfigItem[]; isMaintenanceMode: boolean; isGlobal2FAEnabled: boolean; isFileEditPasswordEnabled: boolean; isNonAdminRegistrationOnly: boolean } | null = null;
 let cachePromise: Promise<void> | null = null;
 
 export function useAppConfig(): AppConfigState {
@@ -37,6 +38,7 @@ export function useAppConfig(): AppConfigState {
   const [isMaintenanceMode, setIsMaintenanceMode] = useState(false);
   const [isGlobal2FAEnabled, setIsGlobal2FAEnabled] = useState(true);
   const [isFileEditPasswordEnabled, setIsFileEditPasswordEnabled] = useState(true);
+  const [isNonAdminRegistrationOnly, setIsNonAdminRegistrationOnly] = useState(true);
   const [isLoading, setIsLoading]           = useState(true);
   const [error, setError]                   = useState<string | null>(null);
 
@@ -66,6 +68,7 @@ export function useAppConfig(): AppConfigState {
       
       const is2FA = sys.find(s => s.config_key === 'global_2fa_enabled')?.config_label !== 'false';
       const isFileEditPass = sys.find(s => s.config_key === 'file_edit_password_enabled')?.config_label !== 'false';
+      const isRegOnly = sys.find(s => s.config_key === 'non_admin_registration_only')?.config_label !== 'false';
 
       setMainCategories(mc);
       setSubCategories(sc);
@@ -74,6 +77,7 @@ export function useAppConfig(): AppConfigState {
       setIsMaintenanceMode(maint);
       setIsGlobal2FAEnabled(is2FA);
       setIsFileEditPasswordEnabled(isFileEditPass);
+      setIsNonAdminRegistrationOnly(isRegOnly);
       setIsLoading(false);
       setError(null);
       // Still try to refresh from Supabase in background (don't await)
@@ -90,6 +94,7 @@ export function useAppConfig(): AppConfigState {
       setIsMaintenanceMode(cachedConfig.isMaintenanceMode);
       setIsGlobal2FAEnabled(cachedConfig.isGlobal2FAEnabled);
       setIsFileEditPasswordEnabled(cachedConfig.isFileEditPasswordEnabled);
+      setIsNonAdminRegistrationOnly(cachedConfig.isNonAdminRegistrationOnly);
       setIsLoading(false);
       return;
     }
@@ -138,8 +143,9 @@ export function useAppConfig(): AppConfigState {
 
       const is2FA = sys.find(s => s.config_key === 'global_2fa_enabled')?.config_label !== 'false';
       const isFileEditPass = sys.find(s => s.config_key === 'file_edit_password_enabled')?.config_label !== 'false';
+      const isRegOnly = sys.find(s => s.config_key === 'non_admin_registration_only')?.config_label !== 'false';
 
-      cachedConfig = { mainCategories: mc, subCategories: sc, sections: se, contractorAccounts: ca, isMaintenanceMode: maint, isGlobal2FAEnabled: is2FA, isFileEditPasswordEnabled: isFileEditPass };
+      cachedConfig = { mainCategories: mc, subCategories: sc, sections: se, contractorAccounts: ca, isMaintenanceMode: maint, isGlobal2FAEnabled: is2FA, isFileEditPasswordEnabled: isFileEditPass, isNonAdminRegistrationOnly: isRegOnly };
       setMainCategories(mc);
       setSubCategories(sc);
       setSections(se);
@@ -147,6 +153,7 @@ export function useAppConfig(): AppConfigState {
       setIsMaintenanceMode(maint);
       setIsGlobal2FAEnabled(is2FA);
       setIsFileEditPasswordEnabled(isFileEditPass);
+      setIsNonAdminRegistrationOnly(isRegOnly);
         setError(null);
       } catch (err: any) {
         console.error('useAppConfig error:', err);
@@ -159,6 +166,7 @@ export function useAppConfig(): AppConfigState {
         setIsMaintenanceMode(false);
         setIsGlobal2FAEnabled(true);
         setIsFileEditPasswordEnabled(true);
+        setIsNonAdminRegistrationOnly(true);
       } finally {
         setIsLoading(false);
         cachePromise = null;
@@ -184,7 +192,7 @@ export function useAppConfig(): AppConfigState {
     fetchConfig(true);
   }, [fetchConfig]);
 
-  return { mainCategories, subCategories, sections, contractorAccounts, isMaintenanceMode, isGlobal2FAEnabled, isFileEditPasswordEnabled, isLoading, error, refetch };
+  return { mainCategories, subCategories, sections, contractorAccounts, isMaintenanceMode, isGlobal2FAEnabled, isFileEditPasswordEnabled, isNonAdminRegistrationOnly, isLoading, error, refetch };
 }
 
 // Background refresh from Supabase without blocking the UI
@@ -214,8 +222,9 @@ async function refreshFromSupabase() {
 
       const is2FA = sys.find(s => s.config_key === 'global_2fa_enabled')?.config_label !== 'false';
       const isFileEditPass = sys.find(s => s.config_key === 'file_edit_password_enabled')?.config_label !== 'false';
+      const isRegOnly = sys.find(s => s.config_key === 'non_admin_registration_only')?.config_label !== 'false';
     
-    cachedConfig = { mainCategories: mc, subCategories: sc, sections: se, contractorAccounts: ca, isMaintenanceMode: maint, isGlobal2FAEnabled: is2FA, isFileEditPasswordEnabled: isFileEditPass };
+    cachedConfig = { mainCategories: mc, subCategories: sc, sections: se, contractorAccounts: ca, isMaintenanceMode: maint, isGlobal2FAEnabled: is2FA, isFileEditPasswordEnabled: isFileEditPass, isNonAdminRegistrationOnly: isRegOnly };
   } catch (_) {
     // Silent: offline refresh failed, that's okay
   }

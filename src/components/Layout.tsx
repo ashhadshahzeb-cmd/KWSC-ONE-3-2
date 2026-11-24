@@ -28,7 +28,8 @@ import {
   BarChart3,
   Wallet,
   Megaphone,
-  Sparkles
+  Sparkles,
+  CreditCard
 } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
@@ -80,6 +81,8 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
   const topNavItems = [
     { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard", visible: !isRestrictedAsstCFO && !isEmpOperator && !isTransferUser && !isHRMSEmployee },
     { to: "/book-section/file-tracking", icon: Shield, label: "File Tracking", visible: !isEmpOperator && !isTransferUser && !isHRMSEmployee },
+    { to: "/book-section/linked-file-tracking", icon: Shield, label: "Linked File Tracking", visible: !isEmpOperator && !isTransferUser && !isHRMSEmployee },
+    { to: "/book-section/cheque-printing", icon: CreditCard, label: "Cheque Printing", visible: !isEmpOperator && !isTransferUser && !isHRMSEmployee },
     { to: "/ask-ai", icon: Sparkles, label: "Ask AI", visible: !isHRMSEmployee },
     { to: "/bank-entries", icon: Landmark, label: "Bank Entries", visible: !isEmpOperator && !isTransferUser && !isHRMSEmployee },
     { to: "/budget-control", icon: Wallet, label: "Budget Control", visible: (userRole === 'admin' || userRole === 'super_admin' || userRole === 'cfo') && !isTransferUser && !isHRMSEmployee },

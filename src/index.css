@@ -1503,3 +1503,9 @@ input[type="date"]:hover::-webkit-calendar-picker-indicator {
 :root:not(.dark) #registration-form-container {
   background-color: #ffffff;
 }
+
+/* Print styles – ensure each linked record starts on a new page */
+@media print {
+  .linked-record { page-break-after: always; }
+  .linked-record * { page-break-inside: avoid; }
+}

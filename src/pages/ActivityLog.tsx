@@ -46,7 +46,8 @@ import {
   Siren,
   TriangleAlert,
   ServerCrash,
-  Users
+  Users,
+  Moon
 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -59,7 +60,10 @@ import {
   fetchActivityLogs,
   fetchUserStats,
   fetchOnlineUsers,
-  fetchHourlyActivityStats
+  fetchHourlyActivityStats,
+  fetchAfter5PMLogins,
+  After5PMLoginUser,
+  isTimestampAfter5PMPKT
 } from '@/hooks/useActivityLog';
 import { supabase } from '@/integrations/supabase/client';
 import { db } from '@/lib/db';
@@ -484,11 +488,13 @@ export default function ActivityLog() {
   const [filterAction, setFilterAction] = useState('all');
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
+  const [filterAfter5PM, setFilterAfter5PM] = useState(false);
+  const [after5PMUsers, setAfter5PMUsers] = useState<After5PMLoginUser[]>([]);
 
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [logsRes, statsRes, onlineRes, hourlyRes] = await Promise.all([
+      const [logsRes, statsRes, onlineRes, hourlyRes, after5Res] = await Promise.all([
         fetchActivityLogs({
           page,
           search,
@@ -496,11 +502,13 @@ export default function ActivityLog() {
           action: filterAction,
           dateFrom: filterDateFrom,
           dateTo: filterDateTo,
+          after5PM: filterAfter5PM,
           pageSize: 50
         }),
         fetchUserStats(),
         fetchOnlineUsers(),
-        fetchHourlyActivityStats()
+        fetchHourlyActivityStats(),
+        fetchAfter5PMLogins(filterDateFrom || undefined)
       ]);
 
       setLogs(logsRes.data);
@@ -508,6 +516,7 @@ export default function ActivityLog() {
       setStats(statsRes);
       setOnlineUsers(onlineRes);
       setHourlyStats(hourlyRes);
+      setAfter5PMUsers(after5Res);
     } catch (err) {
       console.error(err);
       toast.error('Failed to load activity data');
@@ -520,7 +529,7 @@ export default function ActivityLog() {
     if (hasAccess) {
       loadData();
     }
-  }, [page, search, filterUser, filterAction, filterDateFrom, filterDateTo, hasAccess]);
+  }, [page, search, filterUser, filterAction, filterDateFrom, filterDateTo, filterAfter5PM, hasAccess]);
 
   // Supabase Realtime Subscription
   useEffect(() => {
@@ -533,6 +542,7 @@ export default function ActivityLog() {
         // Respect current filters for live appends
         if (filterUser !== 'all' && newLog.user_role !== filterUser) return;
         if (filterAction !== 'all' && newLog.action !== filterAction) return;
+        if (filterAfter5PM && !isTimestampAfter5PMPKT(newLog.created_at)) return;
         
         setLogs(prev => [newLog, ...prev]);
         setTotalRecords(prev => prev + 1);
@@ -547,7 +557,7 @@ export default function ActivityLog() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [isLive, isAdminUser, filterUser, filterAction]);
+  }, [isLive, isAdminUser, filterUser, filterAction, filterAfter5PM]);
 
   const handleExport = async () => {
     setIsExporting(true);
@@ -558,6 +568,7 @@ export default function ActivityLog() {
         action: filterAction,
         dateFrom: filterDateFrom,
         dateTo: filterDateTo,
+        after5PM: filterAfter5PM,
         pageSize: 10000 
       });
 
@@ -566,15 +577,17 @@ export default function ActivityLog() {
         return;
       }
 
-      const headers = ['Date', 'Time', 'User Role', 'User Name', 'Action', 'Diary No', 'Receiving No', 'Subject', 'Details'];
+      const headers = ['Date', 'Time (PKT)', 'Off-Hours (After 5 PM)', 'User Role', 'User Name', 'Action', 'Diary No', 'Receiving No', 'Subject', 'Details'];
       const csvContent = [
         headers.join(','),
         ...res.data.map(log => {
           const date = new Date(log.created_at);
+          const isOffHours = isTimestampAfter5PMPKT(log.created_at) ? 'YES (After 5 PM)' : 'NO';
           const detailsStr = log.details ? JSON.stringify(log.details).replace(/"/g, '""') : '';
           return [
             date.toLocaleDateString(),
             date.toLocaleTimeString(),
+            `"${isOffHours}"`,
             `"${log.user_role}"`,
             `"${log.user_name}"`,
             log.action,
@@ -908,6 +921,76 @@ export default function ActivityLog() {
             </CardContent>
           </Card>
 
+          {/* 🌙 After 5 PM Logins Card */}
+          <Card className="border-amber-500/20 bg-gradient-to-b from-amber-950/20 to-[#09090b]/80 backdrop-blur-md">
+            <CardHeader className="pb-3 border-b border-amber-500/10">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm font-black flex items-center gap-2 text-white">
+                  <Moon className="w-4 h-4 text-amber-400" />
+                  After 5 PM Logins
+                </CardTitle>
+                <Badge className="bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono">
+                  {after5PMUsers.length} Logins
+                </Badge>
+              </div>
+              <CardDescription className="text-[11px] text-white/50">
+                Logins after 5:00 PM PKT
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-3">
+              {after5PMUsers.length > 0 ? (
+                <ScrollArea className="max-h-[220px]">
+                  <div className="space-y-2 pr-1">
+                    {after5PMUsers.slice(0, 15).map((u, idx) => (
+                      <div 
+                        key={idx} 
+                        onClick={() => {
+                          setFilterUser(u.user_role);
+                          setFilterAction('LOGIN');
+                          setFilterAfter5PM(true);
+                          setPage(0);
+                        }}
+                        className="group flex items-center justify-between p-2 rounded-lg bg-amber-500/5 hover:bg-amber-500/15 border border-amber-500/15 cursor-pointer transition-colors"
+                        title="Click to filter table for this user"
+                      >
+                        <div className="truncate pr-2">
+                          <span className="text-xs font-bold text-amber-200 group-hover:text-amber-100 truncate block">
+                            {u.user_name}
+                          </span>
+                          <span className="text-[9px] text-white/40 font-mono">{u.user_role}</span>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="text-[10px] text-amber-400 font-mono font-semibold bg-black/40 px-1.5 py-0.5 rounded border border-amber-500/20 block">
+                            {new Date(u.login_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          <span className="text-[8px] text-white/30 block mt-0.5">
+                            {new Date(u.login_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              ) : (
+                <p className="text-xs text-white/40 text-center py-4 bg-white/[0.02] rounded-lg border border-white/[0.05]">
+                  No logins after 5 PM found.
+                </p>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setFilterAction('LOGIN');
+                  setFilterAfter5PM(!filterAfter5PM);
+                  setPage(0);
+                }}
+                className="w-full mt-3 h-7 text-[11px] text-amber-300 hover:text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 rounded-lg"
+              >
+                {filterAfter5PM ? 'Clear Filter' : 'Filter Table for After 5 PM →'}
+              </Button>
+            </CardContent>
+          </Card>
+
           {/* User Stats Leaderboard */}
           <Card className="border-white/10 bg-[#09090b]/50 backdrop-blur-md">
             <CardHeader className="pb-3 border-b border-white/5">
@@ -967,17 +1050,29 @@ export default function ActivityLog() {
               />
             </div>
             
-            <Select value={filterAction} onValueChange={v => { setFilterAction(v); setPage(0); }}>
-              <SelectTrigger className="w-[140px] h-9 text-xs bg-black/40 border-white/10 text-white rounded-xl">
+            <Select 
+              value={filterAfter5PM && filterAction === 'LOGIN' ? 'AFTER_5PM_LOGIN' : filterAction} 
+              onValueChange={v => { 
+                if (v === 'AFTER_5PM_LOGIN') {
+                  setFilterAction('LOGIN');
+                  setFilterAfter5PM(true);
+                } else {
+                  setFilterAction(v); 
+                }
+                setPage(0); 
+              }}
+            >
+              <SelectTrigger className="w-[160px] h-9 text-xs bg-black/40 border-white/10 text-white rounded-xl">
                 <SelectValue placeholder="All Actions" />
               </SelectTrigger>
               <SelectContent className="bg-[#0f1115] border-white/10 text-white">
                 <SelectItem value="all">All Actions</SelectItem>
+                <SelectItem value="AFTER_5PM_LOGIN">🌙 After 5 PM Logins</SelectItem>
+                <SelectItem value="LOGIN">Login Only</SelectItem>
                 <SelectItem value="REGISTER">Register</SelectItem>
                 <SelectItem value="FORWARD">Forward</SelectItem>
                 <SelectItem value="EDIT">Edit</SelectItem>
                 <SelectItem value="DELETE">Delete</SelectItem>
-                <SelectItem value="LOGIN">Login</SelectItem>
                 <SelectItem value="LOGOUT">Logout</SelectItem>
                 <SelectItem value="SECURITY_ALERT">🚨 Security Alert</SelectItem>
               </SelectContent>
@@ -1012,7 +1107,64 @@ export default function ActivityLog() {
                 title="To Date"
               />
             </div>
+
+            {/* 🌙 Quick Toggle Button for After 5 PM Logins */}
+            <Button
+              type="button"
+              variant={filterAfter5PM ? "default" : "outline"}
+              onClick={() => {
+                const next = !filterAfter5PM;
+                setFilterAfter5PM(next);
+                if (next && filterAction === 'all') {
+                  setFilterAction('LOGIN');
+                }
+                setPage(0);
+              }}
+              className={filterAfter5PM 
+                ? "h-9 text-xs font-bold bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-md shadow-amber-500/20 border-0 rounded-xl px-3 flex items-center gap-1.5 transition-all" 
+                : "h-9 text-xs bg-black/40 border-white/10 text-amber-300 hover:text-white hover:bg-amber-500/10 hover:border-amber-500/30 rounded-xl px-3 flex items-center gap-1.5 transition-all"
+              }
+              title="Filter user logins after 5:00 PM PKT"
+            >
+              <Moon className={`w-3.5 h-3.5 ${filterAfter5PM ? 'text-white' : 'text-amber-400'}`} />
+              <span>🌙 After 5 PM Logins</span>
+              {filterAfter5PM && (
+                <Badge variant="secondary" className="bg-black/50 text-amber-300 text-[10px] ml-1 px-1.5 py-0 border border-amber-400/40">
+                  Active
+                </Badge>
+              )}
+            </Button>
           </div>
+
+          {/* 🌙 Active After 5 PM Logins Banner */}
+          {filterAfter5PM && (
+            <div className="flex items-center justify-between p-3.5 rounded-2xl bg-gradient-to-r from-amber-950/40 via-[#181102] to-[#09090b] border border-amber-500/30 text-amber-200 text-xs shadow-lg shadow-amber-950/20">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  <Moon className="w-4 h-4 text-amber-400 animate-pulse" />
+                </div>
+                <div>
+                  <div className="font-bold text-white flex items-center gap-2 text-sm">
+                    After 5:00 PM (Off-Hours) Filter Active
+                    <Badge className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-mono">
+                      {totalRecords} Found
+                    </Badge>
+                  </div>
+                  <p className="text-[11px] text-amber-200/70 mt-0.5">
+                    Showing logins & system access occurring after 5:00 PM PKT (Pakistan Standard Time).
+                  </p>
+                </div>
+              </div>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => { setFilterAfter5PM(false); setPage(0); }}
+                className="h-7 text-xs text-amber-300 hover:text-amber-100 hover:bg-amber-500/20 px-3 rounded-lg border border-amber-500/20"
+              >
+                Clear Filter
+              </Button>
+            </div>
+          )}
 
           {/* Table */}
           <Card className="border-white/10 bg-[#09090b]/50 backdrop-blur-md overflow-hidden rounded-2xl">
@@ -1043,12 +1195,20 @@ export default function ActivityLog() {
                       {logs.map(log => {
                         const d = new Date(log.created_at);
                         const severity = getActionSeverity(log.action);
+                        const isAfter5 = isTimestampAfter5PMPKT(log.created_at);
+                        const isOffHoursLogin = isAfter5 && log.action === 'LOGIN';
                         return (
                           <TableRow 
                             key={log.id} 
                             className={cn(
                               "border-white/5 group transition-colors",
-                              severity === 'critical' ? "bg-rose-500/5 hover:bg-rose-500/10" : "hover:bg-white/[0.02]"
+                              severity === 'critical' 
+                                ? "bg-rose-500/5 hover:bg-rose-500/10" 
+                                : isOffHoursLogin 
+                                  ? "bg-amber-500/10 hover:bg-amber-500/15 border-amber-500/20" 
+                                  : isAfter5 
+                                    ? "bg-amber-950/10 hover:bg-amber-950/20" 
+                                    : "hover:bg-white/[0.02]"
                             )}
                           >
                             <TableCell className="align-top py-4">
@@ -1059,6 +1219,12 @@ export default function ActivityLog() {
                                 <span className="text-[10px] text-white/40 font-mono mt-0.5">
                                   {d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                                 </span>
+                                {isAfter5 && (
+                                  <span className="text-[9px] text-amber-400 font-mono flex items-center gap-1 mt-1 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 w-fit">
+                                    <Moon className="w-2.5 h-2.5 text-amber-400" />
+                                    After 5 PM
+                                  </span>
+                                )}
                               </div>
                             </TableCell>
                             <TableCell className="align-top py-4">

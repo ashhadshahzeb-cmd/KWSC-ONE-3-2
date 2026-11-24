@@ -1,3 +1,4 @@
+import { safeCopyToClipboard } from '@/utils/clipboard';
 ﻿"use client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,7 @@ import {
   Printer,
   ArrowRight,
   CheckCircle2,
+  Link2,
   FileSearch,
   Building2,
   Shield,
@@ -49,7 +51,10 @@ import {
   ChevronRight,
   Download,
   ExternalLink,
-  X
+  X,
+  QrCode,
+  Camera,
+  Copy
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { QRCodeCanvas } from "qrcode.react";
@@ -257,6 +262,15 @@ export default function FileTracking() {
   const [isScanning, setIsScanning] = useState(false);
   const [exitModalFile, setExitModalFile] = useState<any>(null);
   const [exitModalScanInput, setExitModalScanInput] = useState("");
+
+  // Dedicated QR Code Scanner & File Details Viewer State
+  const [isQrScannerOpen, setIsQrScannerOpen] = useState(false);
+  const [qrScanInputVal, setQrScanInputVal] = useState("");
+  const [isFetchingScannedFile, setIsFetchingScannedFile] = useState(false);
+  const [scannedFileRecord, setScannedFileRecord] = useState<any>(null);
+  const [isScannedFileModalOpen, setIsScannedFileModalOpen] = useState(false);
+  const [useCameraScanner, setUseCameraScanner] = useState(false);
+  const cameraVideoRef = useRef<HTMLVideoElement>(null);
   
   const [approvalStatus, setApprovalStatus] = useState<"waiting" | "approved" | "rejected">("waiting");
 
@@ -335,6 +349,16 @@ export default function FileTracking() {
       .catch(() => {});
   }, []);
 
+  const getPublicTrackUrl = (diary?: string, receiving?: string, extraParams?: string) => {
+    const d = encodeURIComponent((diary || receiving || '').trim());
+    const r = encodeURIComponent((receiving || diary || '').trim());
+    const mobileBaseUrl = (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))
+      ? `${window.location.protocol}//${serverNetworkIp || '172.16.10.52'}:8080`
+      : window.location.origin;
+    const query = extraParams ? (extraParams.startsWith('?') ? extraParams : `?${extraParams}`) : '';
+    return `${mobileBaseUrl}/public-track/${d}/${r}${query}`;
+  };
+
   // Poll local mobile upload endpoint while QR modal is active
   useEffect(() => {
     if (!showMobileUploadQR || !mobileUploadSessionId) return;
@@ -391,8 +415,19 @@ export default function FileTracking() {
     handover_person_name: "",
     file_purpose: "",
     budget_code: "",
+    sub_budget_head: "",
+    ddo_code: "",
     vendor_number: "",
+    parent_diary_number: "",
+    linked_file_id: "",
   });
+
+  // Linked Note Sheet / Parent File state
+  const [parentDiarySearchInput, setParentDiarySearchInput] = useState("");
+  const [linkedParentRecord, setLinkedParentRecord] = useState<any>(null);
+  const [isSearchingParentDiary, setIsSearchingParentDiary] = useState(false);
+  const [parentDiarySuggestions, setParentDiarySuggestions] = useState<any[]>([]);
+  const [showParentSuggestions, setShowParentSuggestions] = useState(false);
 
   const [pendingFilesList, setPendingFilesList] = useState<any[]>([]);
   const [isPendingFilesLoading, setIsPendingFilesLoading] = useState(false);
@@ -650,6 +685,10 @@ export default function FileTracking() {
     handover_person_name: record.handover_person_name || "",
     file_purpose: record.file_purpose || "",
     budget_code: record.budget_code || "",
+    sub_budget_head: record.sub_budget_head || "",
+    ddo_code: record.ddo_code || "",
+    parent_diary_number: record.parent_diary_number || "",
+    linked_file_id: record.linked_file_id || "",
   });
 
   useEffect(() => {
@@ -708,6 +747,12 @@ export default function FileTracking() {
     setIsEditingMode(true);
     setEditingRecordId(record.id);
     setIsForwardingMode(false);
+    if (record.parent_diary_number) {
+      setParentDiarySearchInput(record.parent_diary_number);
+    } else {
+      setParentDiarySearchInput("");
+      setLinkedParentRecord(null);
+    }
     const existingImages = extractRecordImages(record);
     setFileImages(existingImages);
     setFileImage(existingImages[0] || "");
@@ -1321,8 +1366,16 @@ export default function FileTracking() {
       handover_person_name: "",
       file_purpose: "",
       budget_code: "",
+      sub_budget_head: "",
+      ddo_code: "",
       vendor_number: "",
+      parent_diary_number: "",
+      linked_file_id: "",
     });
+    setParentDiarySearchInput("");
+    setLinkedParentRecord(null);
+    setParentDiarySuggestions([]);
+    setShowParentSuggestions(false);
     setSelectedEmpProfile(null);
     setEmpSuggestions([]);
     setShowEmpSuggestions(false);
@@ -1338,6 +1391,87 @@ export default function FileTracking() {
     fetchNextDiaryNumber();
     // Reset the form start timer for fresh registration
     formStartTimeRef.current = Date.now();
+  };
+
+  const handleParentDiarySearch = async (val: string) => {
+    setParentDiarySearchInput(val);
+    const q = val.trim();
+    if (q.length < 2) {
+      setParentDiarySuggestions([]);
+      setShowParentSuggestions(false);
+      return;
+    }
+    setIsSearchingParentDiary(true);
+    try {
+      // 1. Search local Dexie
+      const localMatches = await db.records
+        .filter(r => 
+          Boolean(
+            (r.cfo_diary_number && r.cfo_diary_number.toLowerCase().includes(q.toLowerCase())) ||
+            (r.receiving_number && r.receiving_number.toLowerCase().includes(q.toLowerCase())) ||
+            (r.subject && r.subject.toLowerCase().includes(q.toLowerCase()))
+          )
+        )
+        .limit(10)
+        .toArray();
+
+      // 2. Search Supabase
+      let remoteMatches: any[] = [];
+      try {
+        if (navigator.onLine) {
+          const { data } = await supabase
+            .from('file_tracking_records' as any)
+            .select('id, cfo_diary_number, receiving_number, subject, inward_date, amount, received_from, main_category, sub_category, mark_to')
+            .or(`cfo_diary_number.ilike.%${q}%,receiving_number.ilike.%${q}%,subject.ilike.%${q}%`)
+            .limit(10);
+          if (data) remoteMatches = data;
+        }
+      } catch (e) {
+        console.warn("Supabase parent lookup failed:", e);
+      }
+
+      const seen = new Set();
+      const combined = [...localMatches, ...remoteMatches].filter(item => {
+        const key = item.cfo_diary_number || item.id;
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      setParentDiarySuggestions(combined);
+      setShowParentSuggestions(combined.length > 0);
+    } catch (err) {
+      console.error("Parent search error:", err);
+    } finally {
+      setIsSearchingParentDiary(false);
+    }
+  };
+
+  const handleSelectParentFile = (parent: any) => {
+    setLinkedParentRecord(parent);
+    setFormData(prev => ({
+      ...prev,
+      parent_diary_number: parent.cfo_diary_number || "",
+      linked_file_id: parent.id || "",
+      received_from: prev.received_from || parent.received_from || "",
+      mainCategory: prev.mainCategory || parent.main_category || parent.mainCategory || "",
+      subCategory: prev.subCategory || parent.sub_category || parent.subCategory || "",
+      subject: prev.subject ? prev.subject : `Bill against Note Sheet ${parent.cfo_diary_number}: ${parent.subject || ''}`.trim(),
+    }));
+    setParentDiarySearchInput(parent.cfo_diary_number);
+    setShowParentSuggestions(false);
+    toast.success(`Linked to Note Sheet: ${parent.cfo_diary_number}`);
+  };
+
+  const handleUnlinkParentFile = () => {
+    setLinkedParentRecord(null);
+    setParentDiarySearchInput("");
+    setFormData(prev => ({
+      ...prev,
+      parent_diary_number: "",
+      linked_file_id: "",
+    }));
+    toast.info("Unlinked previous note sheet");
   };
 
   const handleEmployeeNumberChange = async (val: string) => {
@@ -1638,6 +1772,10 @@ export default function FileTracking() {
           handover_person_name: formData.handover_person_name,
           file_purpose: formData.file_purpose,
           budget_code: formData.budget_code,
+          sub_budget_head: formData.sub_budget_head || null,
+          ddo_code: formData.ddo_code || null,
+          parent_diary_number: formData.parent_diary_number || null,
+          linked_file_id: formData.linked_file_id || null,
           file_image: fileImages[0] || null,
           file_images: fileImages.length > 0 ? fileImages : [],
           print_date: formData.print_date || getLocalDateString(),
@@ -1855,6 +1993,10 @@ export default function FileTracking() {
           handover_person_name: formData.handover_person_name,
           file_purpose: formData.file_purpose,
           budget_code: formData.budget_code,
+          sub_budget_head: formData.sub_budget_head || null,
+          ddo_code: formData.ddo_code || null,
+          parent_diary_number: formData.parent_diary_number || null,
+          linked_file_id: formData.linked_file_id || null,
           file_image: fileImages[0] || null,
           file_images: fileImages.length > 0 ? fileImages : [],
           print_date: formData.print_date || getLocalDateString(),
@@ -2294,7 +2436,7 @@ export default function FileTracking() {
       const to = from + DB_PAGE_SIZE - 1;
 
       // Fast slim column selection for table rows (includes file_image & file_images for doc preview)
-      const tableSelectColumns = 'id, tracking_id, cfo_diary_number, receiving_number, inward_date, outward_date, main_category, sub_category, subject, mark_to, amount, gross_amount, deduction, received_from, employee_number, voucher_code, vehicle_no, print_date, handover_person_name, file_purpose, budget_code, remarks, created_at, date_of_sign, file_image, file_images, history';
+      const tableSelectColumns = 'id, tracking_id, cfo_diary_number, receiving_number, inward_date, outward_date, main_category, sub_category, subject, mark_to, amount, gross_amount, deduction, received_from, employee_number, voucher_code, vehicle_no, print_date, handover_person_name, file_purpose, budget_code, sub_budget_head, ddo_code, parent_diary_number, linked_file_id, remarks, created_at, date_of_sign, file_image, file_images, history';
 
       let query = supabase
         .from('file_tracking_records' as any)
@@ -2960,14 +3102,29 @@ export default function FileTracking() {
     }
 
     setIsLoading(true);
-    const safeQuery = searchQuery.replace(/CF0-/i, 'CFO-').trim();
+    let safeQuery = searchQuery.replace(/CF0-/gi, 'CFO-').trim();
+    let secondaryQuery = "";
+    if (safeQuery.includes('public-track/')) {
+      const parts = safeQuery.split('public-track/')[1].split('?')[0].split('/').filter(Boolean);
+      if (parts[0]) safeQuery = decodeURIComponent(parts[0]);
+      if (parts[1]) secondaryQuery = decodeURIComponent(parts[1]);
+    }
+    safeQuery = safeQuery.replace(/CF0-/gi, 'CFO-').trim();
+    if (secondaryQuery) secondaryQuery = secondaryQuery.replace(/CF0-/gi, 'CFO-').trim();
+
     try {
       // 1. Check current records first
       const localMatch = records.find(r =>
-        r.tracking_id?.toLowerCase().includes(safeQuery.toLowerCase()) ||
-        r.cfo_diary_number?.toLowerCase().includes(safeQuery.toLowerCase()) ||
-        r.receiving_number?.toLowerCase().includes(safeQuery.toLowerCase()) ||
-        r.subject?.toLowerCase().includes(safeQuery.toLowerCase())
+        (safeQuery && (
+          r.tracking_id?.toLowerCase().includes(safeQuery.toLowerCase()) ||
+          r.cfo_diary_number?.toLowerCase().includes(safeQuery.toLowerCase()) ||
+          r.receiving_number?.toLowerCase().includes(safeQuery.toLowerCase()) ||
+          r.subject?.toLowerCase().includes(safeQuery.toLowerCase())
+        )) ||
+        (secondaryQuery && (
+          r.receiving_number?.toLowerCase().includes(secondaryQuery.toLowerCase()) ||
+          r.cfo_diary_number?.toLowerCase().includes(secondaryQuery.toLowerCase())
+        ))
       );
 
       if (localMatch) {
@@ -2986,13 +3143,15 @@ export default function FileTracking() {
 
       // 2. Search full IndexedDB (all pages, not just current page)
       const q = safeQuery.toLowerCase();
+      const q2 = secondaryQuery.toLowerCase();
       const fullLocalMatch = await db.records.filter(r =>
         !r.deleted_locally &&
         (
           (r.tracking_id || '').toLowerCase().includes(q) ||
           (r.cfo_diary_number || '').toLowerCase().includes(q) ||
           (r.receiving_number || '').toLowerCase().includes(q) ||
-          (r.subject || '').toLowerCase().includes(q)
+          (r.subject || '').toLowerCase().includes(q) ||
+          (q2 && ((r.receiving_number || '').toLowerCase().includes(q2) || (r.cfo_diary_number || '').toLowerCase().includes(q2)))
         )
       ).first();
 
@@ -3010,11 +3169,15 @@ export default function FileTracking() {
         return;
       }
 
-      // 3. Fetch from Supabase — use safeQuery (CF0→CFO typo fix applied)
+      // 3. Fetch from Supabase
+      let filter = `cfo_diary_number.ilike.%${safeQuery}%,receiving_number.ilike.%${safeQuery}%,tracking_id.ilike.%${safeQuery}%,subject.ilike.%${safeQuery}%`;
+      if (secondaryQuery) {
+        filter += `,receiving_number.ilike.%${secondaryQuery}%,cfo_diary_number.ilike.%${secondaryQuery}%`;
+      }
       const { data, error } = await supabase
         .from('file_tracking_records' as any)
         .select('*')
-        .or(`cfo_diary_number.ilike.%${safeQuery}%,receiving_number.ilike.%${safeQuery}%,tracking_id.ilike.%${safeQuery}%,subject.ilike.%${safeQuery}%`)
+        .or(filter)
         .limit(1)
         .maybeSingle();
 
@@ -3040,6 +3203,186 @@ export default function FileTracking() {
       setIsLoading(false);
     }
   };
+
+  // Dedicated QR scanner fetch function that displays full details modal
+  const fetchAndShowFileDetails = async (inputCode: string) => {
+    if (!inputCode || !inputCode.trim()) {
+      toast.error("Please enter or scan a QR code");
+      return;
+    }
+    setIsFetchingScannedFile(true);
+    let targetDiary = inputCode.trim();
+    let targetReceiving = "";
+
+    // Parse URL if scanned from QR code
+    if (targetDiary.includes('public-track/')) {
+      const parts = targetDiary.split('public-track/')[1].split('?')[0].split('/').filter(Boolean);
+      if (parts[0]) targetDiary = decodeURIComponent(parts[0]);
+      if (parts[1]) targetReceiving = decodeURIComponent(parts[1]);
+    }
+    targetDiary = targetDiary.replace(/CF0-/gi, 'CFO-').trim();
+    if (targetReceiving) targetReceiving = targetReceiving.replace(/CF0-/gi, 'CFO-').trim();
+
+    try {
+      // 1. Check local state records
+      const local = records.find(r => 
+        (targetDiary && (
+          r.cfo_diary_number?.toLowerCase() === targetDiary.toLowerCase() ||
+          r.receiving_number?.toLowerCase() === targetDiary.toLowerCase() ||
+          r.tracking_id?.toLowerCase() === targetDiary.toLowerCase() ||
+          r.cfo_diary_number?.toLowerCase().includes(targetDiary.toLowerCase()) ||
+          r.receiving_number?.toLowerCase().includes(targetDiary.toLowerCase())
+        )) ||
+        (targetReceiving && (
+          r.receiving_number?.toLowerCase() === targetReceiving.toLowerCase() ||
+          r.cfo_diary_number?.toLowerCase() === targetReceiving.toLowerCase()
+        ))
+      );
+
+      if (local) {
+        setScannedFileRecord(local);
+        setIsScannedFileModalOpen(true);
+        setIsQrScannerOpen(false);
+        setUseCameraScanner(false);
+        setQrScanInputVal("");
+        toast.success(`Found: ${local.cfo_diary_number || local.receiving_number}`);
+        return;
+      }
+
+      // 2. Check IndexedDB
+      const fullLocal = await db.records.filter(r =>
+        !r.deleted_locally &&
+        (
+          (r.cfo_diary_number || '').toLowerCase() === targetDiary.toLowerCase() ||
+          (r.receiving_number || '').toLowerCase() === targetDiary.toLowerCase() ||
+          (r.tracking_id || '').toLowerCase() === targetDiary.toLowerCase() ||
+          (r.cfo_diary_number || '').toLowerCase().includes(targetDiary.toLowerCase()) ||
+          (targetReceiving && (r.receiving_number || '').toLowerCase() === targetReceiving.toLowerCase())
+        )
+      ).first();
+
+      if (fullLocal) {
+        setScannedFileRecord(fullLocal);
+        setIsScannedFileModalOpen(true);
+        setIsQrScannerOpen(false);
+        setUseCameraScanner(false);
+        setQrScanInputVal("");
+        toast.success(`Found: ${fullLocal.cfo_diary_number || fullLocal.receiving_number}`);
+        return;
+      }
+
+      // 3. Query Supabase
+      let filter = `cfo_diary_number.ilike.%${targetDiary}%,receiving_number.ilike.%${targetDiary}%,tracking_id.ilike.%${targetDiary}%`;
+      if (targetReceiving) {
+        filter += `,receiving_number.ilike.%${targetReceiving}%,cfo_diary_number.ilike.%${targetReceiving}%`;
+      }
+
+      const { data, error } = await supabase
+        .from('file_tracking_records' as any)
+        .select('*')
+        .or(filter)
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (data) {
+        setScannedFileRecord(data);
+        setIsScannedFileModalOpen(true);
+        setIsQrScannerOpen(false);
+        setUseCameraScanner(false);
+        setQrScanInputVal("");
+        toast.success(`Found: ${data.cfo_diary_number || data.receiving_number}`);
+      } else {
+        toast.error(`No file record found for: "${targetDiary}"`);
+      }
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "Failed to search file details");
+    } finally {
+      setIsFetchingScannedFile(false);
+    }
+  };
+
+  // Camera QR Scanner loop
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let animId: number | null = null;
+
+    if (isQrScannerOpen && useCameraScanner) {
+      navigator.mediaDevices?.getUserMedia({ video: { facingMode: 'environment' } })
+        .then((s) => {
+          stream = s;
+          if (cameraVideoRef.current) {
+            cameraVideoRef.current.srcObject = s;
+            cameraVideoRef.current.play().catch(() => {});
+          }
+
+          if ('BarcodeDetector' in window) {
+            const barcodeDetector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
+            const scanLoop = async () => {
+              if (cameraVideoRef.current && cameraVideoRef.current.readyState === 4) {
+                try {
+                  const codes = await barcodeDetector.detect(cameraVideoRef.current);
+                  if (codes.length > 0 && codes[0].rawValue) {
+                    fetchAndShowFileDetails(codes[0].rawValue);
+                    return;
+                  }
+                } catch {}
+              }
+              animId = requestAnimationFrame(scanLoop);
+            };
+            animId = requestAnimationFrame(scanLoop);
+          }
+        })
+        .catch(() => {
+          toast.error("Unable to access camera. Please enter or scan code via scanner gun.");
+          setUseCameraScanner(false);
+        });
+    }
+
+    return () => {
+      if (animId) cancelAnimationFrame(animId);
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, [isQrScannerOpen, useCameraScanner]);
+
+  // Global Hardware Barcode/QR Scanner Gun listener
+  useEffect(() => {
+    let buffer = '';
+    let lastKeyTime = Date.now();
+
+    const handleGlobalScan = (e: KeyboardEvent) => {
+      const activeTag = (document.activeElement?.tagName || '').toLowerCase();
+      if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') {
+        return;
+      }
+
+      const now = Date.now();
+      const diff = now - lastKeyTime;
+      lastKeyTime = now;
+
+      if (e.key === 'Enter') {
+        if (buffer.length > 3 && diff < 150) {
+          fetchAndShowFileDetails(buffer);
+          buffer = '';
+        } else {
+          buffer = '';
+        }
+      } else if (e.key.length === 1) {
+        if (diff > 200) {
+          buffer = e.key;
+        } else {
+          buffer += e.key;
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalScan);
+    return () => window.removeEventListener('keydown', handleGlobalScan);
+  }, []);
 
   const handlePrint = () => {
     setIsPrintingCovering(true);
@@ -3191,11 +3534,17 @@ export default function FileTracking() {
   const handleScanExit = async (val: string) => {
     if (!val.trim()) return;
     setIsScanning(true);
+    let cleanVal = val.trim();
+    if (cleanVal.includes('public-track/')) {
+      const parts = cleanVal.split('public-track/')[1].split('?')[0].split('/').filter(Boolean);
+      if (parts[0]) cleanVal = decodeURIComponent(parts[0]);
+    }
+    cleanVal = cleanVal.replace(/CF0-/gi, 'CFO-').trim();
     try {
       const { data, error } = await supabase
         .from('file_tracking_records' as any)
         .select('*')
-        .or(`receiving_number.eq.${val.trim()},cfo_diary_number.eq.${val.trim()}`)
+        .or(`receiving_number.eq.${cleanVal},cfo_diary_number.eq.${cleanVal},tracking_id.eq.${cleanVal}`)
         .limit(1)
         .maybeSingle();
 
@@ -3393,6 +3742,19 @@ export default function FileTracking() {
 
           {/* Notification & Signout */}
           <div className="flex items-center gap-3">
+            {/* Dedicated Scan QR Code Button */}
+            <Button
+              type="button"
+              onClick={() => {
+                setIsQrScannerOpen(true);
+                setQrScanInputVal("");
+              }}
+              className="h-12 px-5 rounded-xl bg-gradient-to-r from-blue-700 to-indigo-700 hover:from-blue-800 hover:to-indigo-800 text-white font-black text-xs flex items-center gap-2.5 shadow-lg shadow-blue-900/30 border border-blue-400/30 transition-all hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <ScanLine className="w-4 h-4 text-sky-300 animate-pulse" />
+              <span>Scan QR Code</span>
+            </Button>
+
             <Dialog>
               <DialogTrigger asChild>
                 <Button variant="outline" size="icon" className="w-12 h-12 rounded-xl bg-[#111318] border-white/5 text-white/70 hover:text-[#14b8a6] hover:bg-[#14b8a6]/5 transition-all relative">
@@ -3557,6 +3919,14 @@ export default function FileTracking() {
             >
               <Building2 className="w-4 h-4" /> Contractor Bills
             </TabsTrigger>
+            <button
+              type="button"
+              onClick={() => navigate('/book-section/linked-file-tracking')}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 transition-all font-bold text-xs shrink-0"
+              title="Open Linked Note Sheets and Files in modern cards layout"
+            >
+              <Link2 className="w-4 h-4" /> Linked Files (Cards View)
+            </button>
             {isAdmin && (
               <TabsTrigger
                 value="trash_box"
@@ -4002,7 +4372,7 @@ export default function FileTracking() {
                                   onClick={() => handleQRClick(file.cfo_diary_number, file.receiving_number, getLocalDateString(file.created_at), getLocalDateString(file.created_at))}
                                 >
                                   <img
-                                    src={`https://api.qrserver.com/v1/create-qr-code/?size=35x35&data=${encodeURIComponent(`${window.location.origin}/public-track/${file.cfo_diary_number}/${file.receiving_number}`)}&color=0ea5e9`}
+                                    src={`https://api.qrserver.com/v1/create-qr-code/?size=35x35&data=${encodeURIComponent(getPublicTrackUrl(file.cfo_diary_number, file.receiving_number))}&color=0ea5e9`}
                                     alt="QR"
                                     className="w-8 h-8 mx-auto opacity-70 group-hover:opacity-100 transition-opacity rounded border border-border bg-white"
                                   />
@@ -4181,14 +4551,22 @@ export default function FileTracking() {
                           ) : (
                             records.map((file, i) => (
                               <TableRow key={i} className="hover:bg-primary/5 transition-colors group animate-row-slide-in" style={{ animationDelay: `${i * 0.05}s` }}>
-                                <TableCell className="font-mono text-xs font-bold text-primary">{file.cfo_diary_number}</TableCell>
+                                <TableCell className="font-mono text-xs font-bold text-primary">
+                                  <div>{file.cfo_diary_number}</div>
+                                  {file.parent_diary_number && (
+                                    <div className="text-[10px] text-blue-500 font-normal flex items-center gap-1 mt-0.5">
+                                      <Link2 className="w-2.5 h-2.5 shrink-0" />
+                                      <span className="truncate">Part 2 (Ref: {file.parent_diary_number})</span>
+                                    </div>
+                                  )}
+                                </TableCell>
                                 <TableCell className="text-center">
                                   <div
                                     className="cursor-zoom-in transition-transform hover:scale-110"
                                     onClick={() => handleQRClick(file.cfo_diary_number, file.receiving_number)}
                                   >
                                     <img
-                                      src={`https://api.qrserver.com/v1/create-qr-code/?size=35x35&data=${encodeURIComponent(`${window.location.origin}/public-track/${file.cfo_diary_number}/${file.receiving_number}`)}&color=0ea5e9`}
+                                      src={`https://api.qrserver.com/v1/create-qr-code/?size=35x35&data=${encodeURIComponent(getPublicTrackUrl(file.cfo_diary_number, file.receiving_number))}&color=0ea5e9`}
                                       alt="QR"
                                       className="w-8 h-8 mx-auto rounded border border-border bg-white"
                                     />
@@ -4914,7 +5292,7 @@ export default function FileTracking() {
                           onClick={() => handleQRClick(selectedBill.cfo_diary_number || selectedBill.diary_no, selectedBill.receiving_number || selectedBill.tracking_id, getLocalDateString(selectedBill.created_at), getLocalDateString(selectedBill.created_at))}
                         >
                           <img
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=60x60&data=${encodeURIComponent(`${window.location.origin}/public-track/${selectedBill.cfo_diary_number || selectedBill.diary_no}/${selectedBill.receiving_number || selectedBill.tracking_id}`)}`}
+                            src={`https://api.qrserver.com/v1/create-qr-code/?size=60x60&data=${encodeURIComponent(getPublicTrackUrl(selectedBill.cfo_diary_number || selectedBill.diary_no, selectedBill.receiving_number || selectedBill.tracking_id))}`}
                             alt="QR"
                             className="w-12 h-12"
                           />
@@ -5021,7 +5399,7 @@ export default function FileTracking() {
                                         onClick={() => handleQRClick(file.cfo_diary_number, file.receiving_number)}
                                       >
                                         <img
-                                          src={`https://api.qrserver.com/v1/create-qr-code/?size=35x35&data=${encodeURIComponent(`${window.location.origin}/public-track/${file.cfo_diary_number}/${file.receiving_number}`)}&color=0ea5e9`}
+                                          src={`https://api.qrserver.com/v1/create-qr-code/?size=35x35&data=${encodeURIComponent(getPublicTrackUrl(file.cfo_diary_number, file.receiving_number))}&color=0ea5e9`}
                                           alt="QR"
                                           className="w-8 h-8 mx-auto rounded border border-border bg-white"
                                         />
@@ -5309,1018 +5687,1264 @@ export default function FileTracking() {
                 </div>
               )}
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <div className="space-y-2 relative">
+              {/* ── LINK TO PREVIOUS NOTE SHEET / FILE (PART 2 BILL ENTRY) ── */}
+              {!isEditingMode && (
+                <div className="rounded-xl border border-blue-500/25 bg-blue-500/5 p-3.5 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <Label className="text-xs uppercase font-bold text-muted-foreground">CFO Office Diary No <span className="text-emerald-500 text-[9px]">(Auto-Generated)</span></Label>
-                    <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      fetchNextDiaryNumber();
-                    }}
-                    className="h-5 px-2 py-0 text-[10px] text-sky-500 border border-sky-400/30 hover:bg-sky-500 hover:text-white transition-colors"
-                    title="Regenerate Diary Number if it already exists"
-                  >
-                    <RefreshCw className="w-3 h-3 mr-1" /> Regenerate
-                  </Button>
-                </div>
-                <Input
-                  value={formData.cfo_diary_number}
-                  onChange={e => setFormData({ ...formData, cfo_diary_number: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100 h-11"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Inward Date</Label>
-                <Input
-                  type="date"
-                  value={formData.inward_date}
-                  onChange={e => setFormData({ ...formData, inward_date: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11"
-                />
-              </div>
-
-              {currentRole !== 'entry_operator' && (
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase font-bold text-teal-600 dark:text-[#14b8a6]">File Owner / Handover Person <span className="text-muted-foreground/50 text-[10px] normal-case">(Optional)</span></Label>
-                  <Input
-                    placeholder="Handover Person / Owner"
-                    value={formData.handover_person_name || ""}
-                    onChange={e => setFormData({ ...formData, handover_person_name: e.target.value })}
-                    className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11"
-                  />
-                </div>
-              )}
-
-              {currentRole !== 'entry_operator' && (
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase font-bold text-teal-600 dark:text-[#14b8a6]">Received From {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
-                  <Input
-                    placeholder="Received From"
-                    value={formData.file_purpose || ""}
-                    onChange={e => setFormData({ ...formData, file_purpose: e.target.value })}
-                    className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11"
-                  />
-                </div>
-              )}
-
-              {currentRole !== 'entry_operator' && (
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase font-bold text-muted-foreground">Budget Code <span className="text-muted-foreground/50 text-[10px]">(Optional)</span></Label>
-                  <div className="relative group">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <FileText className="h-4 w-4 text-amber-500" />
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-md bg-blue-500/15 flex items-center justify-center text-blue-500">
+                        <Link2 className="w-3.5 h-3.5" />
+                      </div>
+                      <div>
+                        <span className="text-xs font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wide">
+                          Link Previous Note Sheet / File
+                        </span>
+                        <span className="ml-2 text-[10px] bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-full font-bold">
+                          Part 2 / Bill Entry
+                        </span>
+                      </div>
                     </div>
-                    <Input
-                      placeholder="e.g. BC-2024-001"
-                      className="pl-10 bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono h-11 transition-all rounded-xl font-semibold"
-                      value={formData.budget_code || ""}
-                      onChange={e => setFormData({ ...formData, budget_code: e.target.value })}
-                    />
+                    {linkedParentRecord && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleUnlinkParentFile}
+                        className="h-6 px-2 text-rose-500 hover:text-rose-400 hover:bg-rose-500/10 text-[11px] font-bold"
+                      >
+                        <X className="w-3 h-3 mr-1" />
+                        Unlink Note Sheet
+                      </Button>
+                    )}
                   </div>
-                </div>
-              )}
 
-              {/* Vendor Category & Searchable Identifier Section */}
-              <div className="space-y-3 p-3.5 rounded-xl border border-teal-500/20 bg-teal-500/5 dark:bg-teal-950/10 relative">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <Label className="text-xs uppercase font-bold text-teal-600 dark:text-teal-400 flex items-center gap-1.5">
-                    <Building2 className="w-3.5 h-3.5" /> Vendor Classification & Details
-                  </Label>
-                  {/* Category Switcher Dropdown */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-muted-foreground uppercase font-bold">Category:</span>
-                    <Select
-                      value={vendorCategory}
-                      onValueChange={(val: "contractor" | "employee") => {
-                        setVendorCategory(val);
-                        setVendorSearchInput("");
-                        setSelectedVendorInfo(null);
-                        setVendorSuggestions([]);
-                        setShowVendorSuggestions(false);
-                      }}
-                    >
-                      <SelectTrigger className="h-8 text-xs font-bold w-36 bg-black/30 border-teal-500/30 text-white">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="bg-zinc-950 border-white/10">
-                        <SelectItem value="contractor">👷 Contractor</SelectItem>
-                        <SelectItem value="employee">🪪 Employee</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {/* Field 1: Dynamic Identifier Search (CNIC or Employee No) */}
-                  <div className="space-y-1.5 relative">
-                    <Label className="text-[11px] uppercase font-bold text-muted-foreground flex items-center justify-between">
-                      <span>{vendorCategory === "employee" ? "Search Employee Number" : "Search Contractor CNIC"}</span>
-                      {selectedVendorInfo && (
-                        <span className="text-[10px] text-teal-400 font-mono">✓ Verified</span>
-                      )}
-                    </Label>
+                  {!linkedParentRecord ? (
                     <div className="relative">
-                      <Input
-                        placeholder={vendorCategory === "employee" ? "Type Employee No (e.g. 1042)..." : "Type CNIC (e.g. 42101-...)"}
-                        value={vendorSearchInput}
-                        onChange={e => handleVendorCategorySearch(e.target.value, vendorCategory)}
-                        onFocus={() => { if (vendorSuggestions.length > 0) setShowVendorSuggestions(true); }}
-                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono text-xs h-10 pr-8"
-                      />
-                      {isSearchingVendor && (
-                        <div className="absolute right-2.5 top-2.5">
-                          <Loader2 className="w-4 h-4 animate-spin text-teal-400" />
-                        </div>
-                      )}
-                    </div>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          placeholder="Type previous CFO Diary #, Receiving #, or Subject to link this bill (e.g., CFO-2026-10024)..."
+                          value={parentDiarySearchInput}
+                          onChange={(e) => handleParentDiarySearch(e.target.value)}
+                          onFocus={() => {
+                            if (parentDiarySuggestions.length > 0) setShowParentSuggestions(true);
+                          }}
+                          className="pl-9 pr-8 h-10 text-xs bg-white dark:bg-slate-900 border-blue-500/30 focus-visible:ring-blue-500"
+                        />
+                        {isSearchingParentDiary && (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin absolute right-3 top-1/2 -translate-y-1/2 text-blue-500" />
+                        )}
+                      </div>
 
-                    {/* Suggestions Dropdown for CNIC / Emp No */}
-                    {showVendorSuggestions && vendorSuggestions.length > 0 && (
-                      <div className="absolute z-50 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-lg border border-teal-500/30 bg-[#0f1115]/98 backdrop-blur-xl shadow-2xl p-1 space-y-0.5 scrollbar-thin">
-                        <div className="p-1.5 text-[9px] uppercase font-bold text-teal-400/80 tracking-wider border-b border-white/5 flex items-center justify-between">
-                          <span>Matching {vendorCategory === "employee" ? "Employees" : "Contractors"} ({vendorSuggestions.length})</span>
-                          <span className="text-white/40 text-[9px] lowercase">click to select</span>
-                        </div>
-                        {vendorSuggestions.map((v) => {
-                          const emp = v.employee_no || (Array.isArray(v.custom_fields) && v.custom_fields.find((f: any) => (f.name || "").toLowerCase().includes("employee"))?.value) || "";
-                          const identifier = vendorCategory === "employee" ? (emp || v.phone_no) : v.cnic_no;
-                          return (
+                      {/* Dropdown Suggestions */}
+                      {showParentSuggestions && parentDiarySuggestions.length > 0 && (
+                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl border border-blue-500/30 bg-[#0f1115] shadow-2xl p-1.5 space-y-1">
+                          <div className="px-2 py-1 text-[10px] uppercase font-bold text-blue-400 flex items-center justify-between border-b border-white/5">
+                            <span>Found Note Sheets / Files</span>
+                            <span className="text-white/40 text-[9px] lowercase">click to link</span>
+                          </div>
+                          {parentDiarySuggestions.map((item) => (
                             <div
-                              key={v.id}
-                              onClick={() => handleSelectVendor(v)}
-                              className="flex flex-col gap-0.5 p-2 rounded-md hover:bg-teal-500/15 cursor-pointer transition-colors text-left border-b border-white/5 last:border-0"
+                              key={item.id || item.cfo_diary_number}
+                              onClick={() => handleSelectParentFile(item)}
+                              className="p-2 rounded-lg hover:bg-blue-500/15 cursor-pointer transition-colors border-b border-white/5 last:border-0 text-left space-y-1"
                             >
                               <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                                  <Users className="w-3 h-3 text-teal-400" />
-                                  {v.vendor_name}
-                                </span>
-                                {identifier && (
-                                  <span className="text-[10px] font-mono text-teal-300 bg-teal-500/10 px-1 rounded">
-                                    {identifier}
-                                  </span>
-                                )}
+                                <span className="text-xs font-mono font-bold text-white">{item.cfo_diary_number}</span>
+                                <span className="text-[10px] font-mono text-blue-400 font-semibold">{item.receiving_number}</span>
                               </div>
-                              <div className="flex items-center gap-3 text-[10px] text-muted-foreground font-mono">
-                                {v.phone_no && <span>📞 {v.phone_no}</span>}
-                                {Array.isArray(v.companies) && v.companies.length > 0 && (
-                                  <span className="text-white/60 truncate">🏢 {v.companies.map((c: any) => c.name).filter(Boolean).join(", ")}</span>
-                                )}
+                              <p className="text-xs text-slate-300 truncate font-medium">{item.subject || '---'}</p>
+                              <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
+                                <span className="text-emerald-400 font-bold">Rs. {Number(item.amount || 0).toLocaleString()}</span>
+                                <span>•</span>
+                                <span className="uppercase text-amber-400">{item.received_from || item.mark_to || '---'}</span>
                               </div>
                             </div>
-                          );
-                        })}
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    /* Verified Linked Note Sheet Card */
+                    <div className="p-3.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 dark:bg-emerald-950/20 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                          <span className="text-xs font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                            Verified Note Sheet (Part 1 Record)
+                          </span>
+                        </div>
+                        <span className="text-xs font-mono font-black text-emerald-600 dark:text-emerald-400 bg-emerald-500/20 px-2.5 py-0.5 rounded-lg border border-emerald-500/30">
+                          {linkedParentRecord.cfo_diary_number}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs pt-1.5 border-t border-emerald-500/15">
+                        <div>
+                          <span className="text-[9px] text-muted-foreground uppercase font-bold">Receiving #</span>
+                          <p className="font-mono font-bold text-slate-800 dark:text-slate-100">{linkedParentRecord.receiving_number || '---'}</p>
+                        </div>
+                        <div>
+                          <span className="text-[9px] text-muted-foreground uppercase font-bold">Inward Date</span>
+                          <p className="font-semibold text-slate-800 dark:text-slate-100">{linkedParentRecord.inward_date || '---'}</p>
+                        </div>
+                        <div>
+                          <span className="text-[9px] text-muted-foreground uppercase font-bold">Note Sheet Amount</span>
+                          <p className="font-mono font-black text-emerald-600 dark:text-emerald-400">Rs. {Number(linkedParentRecord.amount || 0).toLocaleString()}</p>
+                        </div>
+                        <div>
+                          <span className="text-[9px] text-muted-foreground uppercase font-bold">Current Section</span>
+                          <p className="font-semibold uppercase text-slate-800 dark:text-slate-100">{linkedParentRecord.mark_to || '---'}</p>
+                        </div>
+                        <div className="col-span-2 sm:col-span-4 pt-1 border-t border-emerald-500/10">
+                          <span className="text-[9px] text-muted-foreground uppercase font-bold">Subject / Description</span>
+                          <p className="text-xs text-slate-700 dark:text-slate-200 font-medium truncate">{linkedParentRecord.subject || '---'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+                            <div className="space-y-6">
+
+                {/* ── CARD 01: INWARD & DIARY IDENTIFICATION ── */}
+                <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-900/50 p-4 sm:p-5 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center font-black text-xs border border-blue-500/20">
+                        01
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wide flex items-center gap-2">
+                          <Inbox className="w-4 h-4 text-blue-500" /> Inward & Diary Information
+                        </h3>
+                        <p className="text-[11px] text-muted-foreground">Official Diary registration, inward date, and initial receiving point</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider bg-blue-500/10 px-2.5 py-0.5 rounded-full border border-blue-500/20">
+                      Official Record
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* CFO Office Diary No */}
+                    <div className="space-y-1.5 relative">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">CFO Office Diary No <span className="text-emerald-500 text-[9px]">(Auto-Generated)</span></Label>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            fetchNextDiaryNumber();
+                          }}
+                          className="h-5 px-2 py-0 text-[10px] text-sky-500 border border-sky-400/30 hover:bg-sky-500 hover:text-white transition-colors"
+                          title="Regenerate Diary Number if it already exists"
+                        >
+                          <RefreshCw className="w-3 h-3 mr-1" /> Regenerate
+                        </Button>
+                      </div>
+                      <Input
+                        value={formData.cfo_diary_number}
+                        onChange={e => setFormData({ ...formData, cfo_diary_number: e.target.value })}
+                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-slate-100 h-11 rounded-xl"
+                      />
+                    </div>
+
+                    {/* Inward Date */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase font-bold text-muted-foreground">Inward Date</Label>
+                      <Input
+                        type="date"
+                        value={formData.inward_date}
+                        onChange={e => setFormData({ ...formData, inward_date: e.target.value })}
+                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl"
+                      />
+                    </div>
+
+                    {/* Receiving Number */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase font-bold text-slate-700 dark:text-slate-300">Receiving Number {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
+                      <Input
+                        placeholder="Enter Receiving Number"
+                        value={formData.receiving_number}
+                        onChange={e => setFormData({ ...formData, receiving_number: e.target.value })}
+                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 font-mono text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
+                    {/* Received From Division */}
+                    {currentRole !== 'entry_operator' && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-teal-600 dark:text-[#14b8a6]">Received From Division <span className="text-red-500">*</span></Label>
+                        <Input
+                          placeholder="Received From Division"
+                          value={formData.file_purpose || ""}
+                          onChange={e => setFormData({ ...formData, file_purpose: e.target.value })}
+                          className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl"
+                        />
+                      </div>
+                    )}
+
+                    {/* Department Name (Optional) */}
+                    {currentRole !== 'entry_operator' && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">Department Name <span className="text-muted-foreground/50 text-[10px]">(Optional)</span></Label>
+                        <div className="relative group">
+                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <FileText className="h-4 w-4 text-teal-500" />
+                          </div>
+                          <Input
+                            placeholder="e.g. Finance / Administration"
+                            className="pl-10 bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono h-11 transition-all rounded-xl font-semibold"
+                            value={formData.department_number || ""}
+                            onChange={e => setFormData({ ...formData, department_number: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* File Owner / Handover Person */}
+                    {currentRole !== 'entry_operator' && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-slate-600 dark:text-slate-400">File Owner / Handover Person <span className="text-muted-foreground/50 text-[10px] normal-case">(Optional)</span></Label>
+                        <Input
+                          placeholder="Handover Person / Owner"
+                          value={formData.handover_person_name || ""}
+                          onChange={e => setFormData({ ...formData, handover_person_name: e.target.value })}
+                          className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* ── CARD 02: PAYEE & VENDOR DETAILS ── */}
+                <div className="rounded-2xl border border-teal-500/30 bg-teal-50/30 dark:bg-teal-950/20 p-4 sm:p-5 shadow-xs space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-teal-500/20">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-teal-500/15 dark:bg-teal-500/20 text-teal-700 dark:text-teal-300 flex items-center justify-center font-black text-xs border border-teal-500/20">
+                        02
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wide flex items-center gap-2">
+                          <Building2 className="w-4 h-4 text-teal-600 dark:text-teal-400" /> Payee & Vendor Information
+                        </h3>
+                        <p className="text-[11px] text-muted-foreground">Search directory by CNIC / Employee ID or manually input payee details</p>
+                      </div>
+                    </div>
+
+                    {/* Category Switcher Dropdown */}
+                    <div className="flex items-center gap-2 self-start sm:self-auto bg-white/90 dark:bg-slate-900/90 p-1 rounded-xl border border-teal-500/30 shadow-xs">
+                      <span className="text-[11px] text-muted-foreground uppercase font-bold pl-2">Category:</span>
+                      <Select
+                        value={vendorCategory}
+                        onValueChange={(val: "contractor" | "employee") => {
+                          setVendorCategory(val);
+                          setVendorSearchInput("");
+                          setSelectedVendorInfo(null);
+                          setVendorSuggestions([]);
+                          setShowVendorSuggestions(false);
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs font-bold w-44 bg-teal-500/10 dark:bg-teal-500/20 border-teal-500/30 text-teal-900 dark:text-teal-100 focus:ring-teal-500/30">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="bg-white dark:bg-slate-950 border border-teal-500/20">
+                          <SelectItem value="contractor" className="text-xs font-semibold cursor-pointer">👷 Contractor</SelectItem>
+                          <SelectItem value="employee" className="text-xs font-semibold cursor-pointer">🪪 Employee</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Field 1: Dynamic Identifier Search */}
+                    <div className="space-y-1.5 relative">
+                      <Label className="text-xs uppercase font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                        <span>{vendorCategory === "employee" ? "Search Employee Number" : "Search Contractor CNIC"}</span>
+                        {selectedVendorInfo && (
+                          <span className="text-[11px] text-teal-600 dark:text-teal-400 font-mono font-semibold">✓ Verified</span>
+                        )}
+                      </Label>
+                      <div className="relative">
+                        <Input
+                          placeholder={vendorCategory === "employee" ? "Type Employee No (e.g. 1042)..." : "Type CNIC (e.g. 42101-1234567-1)..."}
+                          value={vendorSearchInput}
+                          onChange={e => handleVendorCategorySearch(e.target.value, vendorCategory)}
+                          onFocus={() => { if (vendorSuggestions.length > 0) setShowVendorSuggestions(true); }}
+                          className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono text-xs h-11 pr-8 rounded-xl focus:border-teal-500"
+                        />
+                        {isSearchingVendor && (
+                          <div className="absolute right-3 top-3.5">
+                            <Loader2 className="w-4 h-4 animate-spin text-teal-500" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Suggestions Dropdown */}
+                      {showVendorSuggestions && vendorSuggestions.length > 0 && (
+                        <div className="absolute z-50 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-lg border border-teal-500/30 bg-[#0f1115]/98 backdrop-blur-xl shadow-2xl p-1 space-y-0.5 scrollbar-thin">
+                          <div className="p-1.5 text-[9px] uppercase font-bold text-teal-400/80 tracking-wider border-b border-white/5 flex items-center justify-between">
+                            <span>Matching {vendorCategory === "employee" ? "Employees" : "Contractors"} ({vendorSuggestions.length})</span>
+                            <span className="text-white/40 text-[9px] lowercase">click to select</span>
+                          </div>
+                          {vendorSuggestions.map((v) => {
+                            const emp = v.employee_no || (Array.isArray(v.custom_fields) && v.custom_fields.find((f: any) => (f.name || "").toLowerCase().includes("employee"))?.value) || "";
+                            const identifier = vendorCategory === "employee" ? (emp || v.phone_no) : v.cnic_no;
+                            return (
+                              <div
+                                key={v.id}
+                                onClick={() => handleSelectVendor(v)}
+                                className="flex flex-col gap-0.5 p-2 rounded-md hover:bg-teal-500/15 cursor-pointer transition-colors text-left border-b border-white/5 last:border-0"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                                    <Users className="w-3 h-3 text-teal-400" />
+                                    {v.vendor_name}
+                                  </span>
+                                  {identifier && (
+                                    <span className="text-[10px] font-mono text-teal-300 bg-teal-500/10 px-1 rounded">
+                                      {identifier}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 text-[10px] text-muted-foreground font-mono">
+                                  {v.phone_no && <span>📞 {v.phone_no}</span>}
+                                  {Array.isArray(v.companies) && v.companies.length > 0 && (
+                                    <span className="text-white/60 truncate">🏢 {v.companies.map((c: any) => c.name).filter(Boolean).join(", ")}</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Field 2: Vendor Name */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                        <span>Vendor / Payee Name</span>
+                        <span className="text-[10px] text-muted-foreground font-normal">Editable</span>
+                      </Label>
+                      <Input
+                        placeholder="Vendor Name / Section"
+                        value={formData.received_from}
+                        onChange={e => setFormData({ ...formData, received_from: e.target.value })}
+                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold text-xs h-11 rounded-xl focus:border-teal-500"
+                      />
+                    </div>
+
+                    {/* Field 3: Vendor Number */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                        <span>Vendor Number</span>
+                        <span className="text-[10px] text-muted-foreground font-normal">Optional</span>
+                      </Label>
+                      <Input
+                        placeholder="e.g. 10243"
+                        value={formData.vendor_number || ""}
+                        onChange={e => setFormData({ ...formData, vendor_number: e.target.value })}
+                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono font-semibold text-xs h-11 rounded-xl focus:border-teal-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Vendor Summary Pill if Selected */}
+                  {selectedVendorInfo && (() => {
+                    const vNo = selectedVendorInfo.vendor_number || (Array.isArray(selectedVendorInfo.custom_fields) && selectedVendorInfo.custom_fields.find((f: any) => {
+                      const n = (f.name || "").toLowerCase().replace(/[\s_-]/g, "");
+                      return n === "vendornumber" || n === "vendorno" || n === "vendorid";
+                    })?.value) || "";
+                    return (
+                      <div className="p-2.5 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-teal-500/30 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <span className="font-bold text-teal-700 dark:text-teal-300 flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-teal-500" />
+                            {selectedVendorInfo.vendor_name}
+                          </span>
+                          {vNo && (
+                            <Badge variant="outline" className="text-[10px] font-mono bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30">
+                              Vendor #{vNo}
+                            </Badge>
+                          )}
+                          {selectedVendorInfo.cnic_no && (
+                            <span className="font-mono text-[11px] text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">CNIC: {selectedVendorInfo.cnic_no}</span>
+                          )}
+                          {selectedVendorInfo.phone_no && (
+                            <span className="font-mono text-[11px] text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">Phone: {selectedVendorInfo.phone_no}</span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedVendorInfo(null);
+                            setVendorSearchInput("");
+                            setFormData(prev => ({ ...prev, received_from: "", vendor_number: "" }));
+                          }}
+                          className="text-[11px] font-semibold text-rose-500 hover:text-rose-600 hover:underline px-2 py-1 rounded-md"
+                        >
+                          Clear Selection
+                        </button>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Conditional Field: Employee Number Search */}
+                  {formData.mainCategory === 'employee' && formData.subCategory && (
+                    <div className="space-y-2 pt-2 border-t border-teal-500/20 relative">
+                      <Label className="text-xs uppercase font-bold text-sky-500 flex items-center gap-2">
+                        <User className="w-3.5 h-3.5" /> Employee / Pension Number Lookup
+                      </Label>
+                      <div className="relative">
+                        <Input
+                          placeholder="Type Name, Emp No, or Pension No..."
+                          value={formData.employee_number}
+                          onChange={e => handleEmployeeNumberChange(e.target.value)}
+                          onFocus={() => { if (empSuggestions.length > 0) setShowEmpSuggestions(true); }}
+                          className="bg-white dark:bg-slate-900 border-sky-300 dark:border-sky-500/30 text-sky-800 dark:text-sky-300 font-bold focus-visible:ring-sky-500 pr-8 font-mono text-xs h-11 rounded-xl"
+                        />
+                        {isSearchingEmp && (
+                          <div className="absolute right-3 top-3.5">
+                            <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
+                          </div>
+                        )}
+                      </div>
+
+                      {showEmpSuggestions && empSuggestions.length > 0 && (
+                        <div className="mt-2 max-h-60 overflow-y-auto rounded-lg border border-white/10 bg-[#0f1115]/95 backdrop-blur-xl shadow-2xl p-1 space-y-0.5 scrollbar-thin">
+                          <div className="p-1.5 text-[9px] uppercase font-bold text-sky-400/60 tracking-wider border-b border-white/5">
+                            Lookup matches found
+                          </div>
+                          {empSuggestions.map((emp) => {
+                            const num = emp.employee_no || emp.pension_no || "N/A";
+                            return (
+                              <div
+                                key={emp.id}
+                                onClick={() => handleSelectEmployee(emp)}
+                                className="flex flex-col gap-0.5 p-2 rounded-md hover:bg-sky-500/10 cursor-pointer transition-colors text-left"
+                              >
+                                <span className="text-xs font-bold text-white">{emp.full_name}</span>
+                                <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
+                                  <span className="text-sky-400 font-semibold">{num}</span>
+                                  <span>•</span>
+                                  <span className="uppercase text-[9px] px-1 bg-white/5 rounded">{emp.category}</span>
+                                  {emp.source_tab && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="text-[9px] text-purple-400 font-semibold uppercase">{emp.source_tab}</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Verified Employee Summary Profile Card */}
+                      {selectedEmpProfile && (
+                        <div className="mt-3 p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 backdrop-blur-md space-y-3 shadow-inner">
+                          <div className="flex items-center justify-between border-b border-emerald-500/15 pb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center border border-emerald-500/30">
+                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                              </div>
+                              <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Verified KWSC Staff Profile</span>
+                            </div>
+                            <span className="px-2 py-0.5 rounded text-[8px] font-bold uppercase bg-emerald-500/20 text-emerald-400">
+                              {selectedEmpProfile.category}
+                            </span>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-y-2 gap-x-4 text-xs">
+                            <div className="space-y-0.5">
+                              <span className="text-[9px] text-muted-foreground uppercase font-medium">Full Name</span>
+                              <p className="font-bold text-white text-sm truncate">{selectedEmpProfile.full_name}</p>
+                            </div>
+                            <div className="space-y-0.5 font-mono">
+                              <span className="text-[9px] text-muted-foreground uppercase font-medium">Employee / Pen No</span>
+                              <p className="font-bold text-white text-xs">{selectedEmpProfile.employee_no || selectedEmpProfile.pension_no || "---"}</p>
+                            </div>
+                            <div className="space-y-0.5">
+                              <span className="text-[9px] text-muted-foreground uppercase font-medium">Original source sheet</span>
+                              <p className="font-bold text-sky-400 text-xs font-mono uppercase">{selectedEmpProfile.source_tab || "UNIFIED"}</p>
+                            </div>
+                            <div className="space-y-0.5">
+                              <span className="text-[9px] text-muted-foreground uppercase font-medium">Sanctioned Net Amount</span>
+                              <p className="font-bold text-emerald-400 font-mono text-sm">
+                                Rs. {(selectedEmpProfile.cheque_amount || selectedEmpProfile.total_amount || 0).toLocaleString()}
+                              </p>
+                            </div>
+                            {selectedEmpProfile.bank_details && (
+                              <div className="col-span-2 space-y-0.5 pt-1 border-t border-emerald-500/10">
+                                <span className="text-[9px] text-muted-foreground uppercase font-medium">Bank details</span>
+                                <p className="text-white/80 italic text-[11px] truncate">{selectedEmpProfile.bank_details}</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Conditional: Contractor Account Selection, Voucher & Vehicle */}
+                  {formData.mainCategory === 'contractor' && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-teal-500/20">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-amber-500 flex items-center gap-1.5">
+                          <User className="w-3.5 h-3.5" /> Select Contractor
+                        </Label>
+                        <Select
+                          value={formData.employee_number}
+                          onValueChange={(val) => {
+                            const selected = contractorAccounts.find(c => c.config_key === val);
+                            setFormData(prev => ({
+                              ...prev,
+                              employee_number: val,
+                              received_from: selected ? selected.config_label : prev.received_from
+                            }));
+                          }}
+                        >
+                          <SelectTrigger className="bg-white dark:bg-zinc-950 border-amber-500/30 text-slate-800 dark:text-white font-bold h-11 text-xs rounded-xl">
+                            <SelectValue placeholder="Select Contractor Account..." />
+                          </SelectTrigger>
+                          <SelectContent className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-white/10">
+                            {(contractorAccounts || []).map(account => (
+                              <SelectItem key={account.id} value={account.config_key}>
+                                {account.config_label} <span className="text-slate-400 ml-2 font-mono text-xs">({account.config_key})</span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {formData.subCategory && (
+                        <div className="space-y-1.5">
+                          <Label className="text-xs uppercase font-bold text-emerald-500 flex items-center gap-1.5">
+                            <FileText className="w-3.5 h-3.5" /> Voucher Code
+                          </Label>
+                          <Input
+                            placeholder="Enter Voucher Reference"
+                            value={formData.voucher_code}
+                            onChange={e => setFormData({ ...formData, voucher_code: e.target.value })}
+                            className="bg-white dark:bg-slate-900 border-emerald-500/30 font-bold focus-visible:ring-emerald-500 h-11 rounded-xl text-xs"
+                          />
+                        </div>
+                      )}
+
+                      {((formData.mainCategory === 'contractor' && formData.subCategory === 'pol_bills') || formData.mainCategory === 'pol_bills') && (
+                        <div className="space-y-1.5">
+                          <Label className="text-xs uppercase font-bold text-orange-500 flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5" /> Vehicle No (Optional)
+                          </Label>
+                          <Input
+                            placeholder="Enter Vehicle Number"
+                            value={formData.vehicle_no}
+                            onChange={e => setFormData({ ...formData, vehicle_no: e.target.value })}
+                            className="bg-white dark:bg-slate-900 border-orange-500/30 font-bold focus-visible:ring-orange-500 h-11 rounded-xl text-xs"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── CARD 03: FILE SUBJECT, CATEGORY & FINANCIALS ── */}
+                <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-900/50 p-4 sm:p-5 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-500/10 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-black text-xs border border-emerald-500/20">
+                        03
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wide flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-emerald-500" /> File Subject, Category & Financials
+                        </h3>
+                        <p className="text-[11px] text-muted-foreground">Categorize the file, set description/subject, and record transaction amounts</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Main Category */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase font-bold text-muted-foreground">Main Category {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
+                      <Select
+                        value={formData.mainCategory}
+                        onValueChange={v => setFormData({ ...formData, mainCategory: v, subCategory: "" })}
+                      >
+                        <SelectTrigger className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl">
+                          <SelectValue placeholder="Select Main Category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {dynMainCats.map(mc => (
+                            <SelectItem key={mc.config_key} value={mc.config_key}>{mc.config_label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Sub Category / Fuel Station */}
+                    {(formData.mainCategory === 'pol_bills' || formData.mainCategory === 'pol-bills' || formData.mainCategory === 'POL Bills') ? (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">Fuel Station</Label>
+                        <div className="relative">
+                          <Select value={formData.fuel_station || formData.subCategory} onValueChange={v => setFormData({ ...formData, fuel_station: v, subCategory: v })}>
+                            <SelectTrigger className="w-full bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 h-11 rounded-xl font-semibold">
+                              <SelectValue placeholder="Select fuel station" />
+                            </SelectTrigger>
+                            <SelectContent className="max-h-[250px]">
+                              <SelectItem value="ISHA SERVICE STATION">ISHA SERVICE STATION</SelectItem>
+                              <SelectItem value="ALLIED PETROLIUM SERVICE">ALLIED PETROLIUM SERVICE</SelectItem>
+                              <SelectItem value="AWAMI FILLING STATION">AWAMI FILLING STATION</SelectItem>
+                              <SelectItem value="BANBHORE FILLING STATION">BANBHORE FILLING STATION</SelectItem>
+                              <SelectItem value="BROTHERS SERVICE STATION">BROTHERS SERVICE STATION</SelectItem>
+                              <SelectItem value="CENTRAL SERVICE STATION">CENTRAL SERVICE STATION</SelectItem>
+                              <SelectItem value="DILAWAR GESOLINE">DILAWAR GESOLINE</SelectItem>
+                              <SelectItem value="FAISAL FILLING STATION">FAISAL FILLING STATION</SelectItem>
+                              <SelectItem value="FANCY SERVICE STATION">FANCY SERVICE STATION</SelectItem>
+                              <SelectItem value="KARACHI SERVICE STATION">KARACHI SERVICE STATION</SelectItem>
+                              <SelectItem value="KARIMI AUTOMOBILE SERVICE">KARIMI AUTOMOBILE SERVICE</SelectItem>
+                              <SelectItem value="LANDHI GASOLINE SERVICES">LANDHI GASOLINE SERVICES</SelectItem>
+                              <SelectItem value="MACCA MOBILE SERVICE">MACCA MOBILE SERVICE</SelectItem>
+                              <SelectItem value="MADINA FILLING STATION">MADINA FILLING STATION</SelectItem>
+                              <SelectItem value="MADINA SERVICE STATION EJAZ">MADINA SERVICE STATION EJAZ</SelectItem>
+                              <SelectItem value="MADINA SERVICES STATION YASIR">MADINA SERVICES STATION YASIR</SelectItem>
+                              <SelectItem value="MANSOOR SERVICE STATION">MANSOOR SERVICE STATION</SelectItem>
+                              <SelectItem value="MUGHAL PETROLEUM SERVICES">MUGHAL PETROLEUM SERVICES</SelectItem>
+                              <SelectItem value="NOOR PETROLIUM SERVICE">NOOR PETROLIUM SERVICE</SelectItem>
+                              <SelectItem value="PAK PETROLEUM SERVICE">PAK PETROLEUM SERVICE</SelectItem>
+                              <SelectItem value="PSO FLEET CARD">PSO FLEET CARD</SelectItem>
+                              <SelectItem value="Q STAR PETROLEUM SERVICE">Q STAR PETROLEUM SERVICE</SelectItem>
+                              <SelectItem value="ROSHAN SERVICE STATION">ROSHAN SERVICE STATION</SelectItem>
+                              <SelectItem value="STADIUM SERVICE STATION">STADIUM SERVICE STATION</SelectItem>
+                              <SelectItem value="SUPER SERVICE STATION">SUPER SERVICE STATION</SelectItem>
+                              <SelectItem value="UNITED FILLING STATION">UNITED FILLING STATION</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">Sub Category {currentRole !== 'entry_operator' && formData.mainCategory !== 'impress' && formData.mainCategory !== 'pol_bills' && <span className="text-red-500">*</span>}</Label>
+                        <Select
+                          value={formData.subCategory}
+                          onValueChange={v => setFormData({ ...formData, subCategory: v })}
+                          disabled={!formData.mainCategory}
+                        >
+                          <SelectTrigger className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl">
+                            <SelectValue placeholder={formData.mainCategory ? "Select Sub Category" : "Select Main Category First"} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {formData.mainCategory && (getSubCategoriesFor(dynSubCats || [], formData.mainCategory) || []).map(sc => (
+                              <SelectItem key={sc.config_key} value={sc.config_key}>{sc.config_label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    {/* DDO Code */}
+                    {currentRole !== 'entry_operator' && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">DDO Code <span className="text-muted-foreground/50 text-[10px]">(Optional)</span></Label>
+                        <div className="relative group">
+                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <FileText className="h-4 w-4 text-sky-500" />
+                          </div>
+                          <Input
+                            placeholder="e.g. DDO-001"
+                            className="pl-10 bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono h-11 transition-all rounded-xl font-semibold"
+                            value={formData.ddo_code || ""}
+                            onChange={e => setFormData({ ...formData, ddo_code: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Budget Code */}
+                    {currentRole !== 'entry_operator' && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">Budget Code <span className="text-muted-foreground/50 text-[10px]">(Optional)</span></Label>
+                        <div className="relative group">
+                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <FileText className="h-4 w-4 text-amber-500" />
+                          </div>
+                          <Input
+                            placeholder="e.g. BC-2024-001"
+                            className="pl-10 bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono h-11 transition-all rounded-xl font-semibold"
+                            value={formData.budget_code || ""}
+                            onChange={e => setFormData({ ...formData, budget_code: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Sub-Budget Head */}
+                    {currentRole !== 'entry_operator' && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">Sub-Budget Head <span className="text-muted-foreground/50 text-[10px]">(Optional)</span></Label>
+                        <div className="relative group">
+                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <FileText className="h-4 w-4 text-emerald-500" />
+                          </div>
+                          <Input
+                            placeholder="e.g. Repairs and Maintenance"
+                            className="pl-10 bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono h-11 transition-all rounded-xl font-semibold"
+                            value={formData.sub_budget_head || ""}
+                            onChange={e => setFormData({ ...formData, sub_budget_head: e.target.value })}
+                          />
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  {/* Field 2: Vendor Name (Auto-populated or Direct Typing) */}
-                  <div className="space-y-1.5">
-                    <Label className="text-[11px] uppercase font-bold text-muted-foreground flex items-center justify-between">
-                      <span>Vendor / Payee Name</span>
-                      <span className="text-[10px] text-muted-foreground/60">Editable</span>
-                    </Label>
-                    <Input
-                      placeholder="Vendor Name / Section"
-                      value={formData.received_from}
-                      onChange={e => setFormData({ ...formData, received_from: e.target.value })}
-                      className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold text-xs h-10"
-                    />
-                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-1">
+                    {/* Name / Purpose (Wide 2-col area!) */}
+                    <div className="space-y-1.5 lg:col-span-2">
+                      <Label className="text-xs uppercase font-bold text-slate-700 dark:text-slate-300">Name / Purpose of File {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
+                      <Input
+                        placeholder="Enter file name, bill purpose, or brief description..."
+                        value={formData.subject}
+                        onChange={e => setFormData({ ...formData, subject: e.target.value })}
+                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl"
+                      />
+                    </div>
 
-                  {/* Field 3: Vendor Number (Only when manually entered or selected) */}
-                  <div className="space-y-1.5">
-                    <Label className="text-[11px] uppercase font-bold text-muted-foreground flex items-center justify-between">
-                      <span>Vendor Number</span>
-                      <span className="text-[10px] text-muted-foreground/60">Optional</span>
-                    </Label>
-                    <Input
-                      placeholder="e.g. 10243"
-                      value={formData.vendor_number || ""}
-                      onChange={e => setFormData({ ...formData, vendor_number: e.target.value })}
-                      className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono font-semibold text-xs h-10"
-                    />
+                    {/* Financial Amount */}
+                    <div className="space-y-1.5 lg:col-span-1">
+                      {(formData.mainCategory === 'employee' || formData.mainCategory === 'contractor') ? (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <Label className="text-[10px] uppercase font-bold text-muted-foreground">Gross (PKR)</Label>
+                              <Input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="Gross"
+                                value={formatAmountWithCommas(formData.gross_amount)}
+                                onChange={e => {
+                                  const clean = e.target.value.replace(/[^0-9.]/g, '');
+                                  const parts = clean.split('.');
+                                  const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
+                                  const gross = sanitized === '' ? 0 : (parseFloat(sanitized) || 0);
+                                  const ded = parseAmountValue(formData.deduction);
+                                  setFormData({ ...formData, gross_amount: sanitized === '' ? '' : sanitized, amount: gross - ded });
+                                }}
+                                className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-bold h-10 text-xs rounded-xl"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[10px] uppercase font-bold text-muted-foreground">Deduction</Label>
+                              <Input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="Deduction"
+                                value={formatAmountWithCommas(formData.deduction)}
+                                onChange={e => {
+                                  const clean = e.target.value.replace(/[^0-9.]/g, '');
+                                  const parts = clean.split('.');
+                                  const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
+                                  const ded = sanitized === '' ? 0 : (parseFloat(sanitized) || 0);
+                                  const gross = parseAmountValue(formData.gross_amount);
+                                  setFormData({ ...formData, deduction: sanitized === '' ? '' : sanitized, amount: gross - ded });
+                                }}
+                                className="bg-white dark:bg-slate-900 border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 font-bold h-10 text-xs rounded-xl"
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-[10px] uppercase font-bold text-emerald-600 dark:text-emerald-400">Net Amount (PKR)</Label>
+                            <Input
+                              type="text"
+                              disabled
+                              value={formData.amount !== undefined && formData.amount !== null && formData.amount !== "" ? (Number(formData.amount).toLocaleString('en-US') || "0") : "0"}
+                              className="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-800 font-black text-emerald-700 dark:text-emerald-400 opacity-90 cursor-not-allowed h-10 tracking-wider text-xs rounded-xl"
+                            />
+                            {getAmountInWords(formData.amount) && (
+                              <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 italic truncate">
+                                {getAmountInWords(formData.amount)}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs uppercase font-bold text-muted-foreground">Amount (PKR) <span className="text-emerald-500 text-[9px]">(Net)</span></Label>
+                            <div className="flex items-center gap-1.5">
+                              <Checkbox
+                                id="no_amount_chk"
+                                checked={formData.no_amount || false}
+                                onCheckedChange={(checked) => setFormData({ ...formData, no_amount: !!checked, amount: checked ? 0 : formData.amount })}
+                              />
+                              <label htmlFor="no_amount_chk" className="text-[11px] font-semibold text-slate-600 dark:text-white/60 cursor-pointer select-none">No Amount</label>
+                            </div>
+                          </div>
+                          <Input
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="Enter Amount"
+                            value={formData.no_amount ? "0" : formatAmountWithCommas(formData.amount)}
+                            disabled={formData.no_amount || false}
+                            onChange={e => {
+                              const clean = e.target.value.replace(/[^0-9.]/g, '');
+                              const parts = clean.split('.');
+                              const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
+                              setFormData({ ...formData, amount: sanitized === '' ? '' : sanitized });
+                            }}
+                            className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-bold h-11 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed"
+                          />
+                          {!formData.no_amount && getAmountInWords(formData.amount) && (
+                            <p className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 italic truncate">
+                              {getAmountInWords(formData.amount)}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                {/* Vendor Summary Pill if Selected */}
-                {selectedVendorInfo && (() => {
-                  const vNo = selectedVendorInfo.vendor_number || (Array.isArray(selectedVendorInfo.custom_fields) && selectedVendorInfo.custom_fields.find((f: any) => {
-                    const n = (f.name || "").toLowerCase().replace(/[\s_-]/g, "");
-                    return n === "vendornumber" || n === "vendorno" || n === "vendorid";
-                  })?.value) || "";
-                  return (
-                    <div className="p-2 rounded-lg bg-black/30 border border-teal-500/20 flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-teal-400">{selectedVendorInfo.vendor_name}</span>
-                        {vNo && (
-                          <Badge variant="outline" className="text-[10px] font-mono bg-amber-500/10 text-amber-400 border-amber-500/30">
-                            Vendor #{vNo}
-                          </Badge>
+                {/* ── CARD 04: FORWARDING, AUTHORIZATION & ATTACHMENTS ── */}
+                <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-900/50 p-4 sm:p-5 shadow-xs space-y-5">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-purple-500/10 dark:bg-purple-500/20 text-purple-600 dark:text-purple-400 flex items-center justify-center font-black text-xs border border-purple-500/20">
+                        04
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wide flex items-center gap-2">
+                          <ArrowRight className="w-4 h-4 text-purple-500" /> Forwarding, Authorization & Attachments
+                        </h3>
+                        <p className="text-[11px] text-muted-foreground">Department routing, digital authorization stamp, and scanned physical receipts</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                    {/* Left 2 Columns: Routing, Outward Date, Remarks & Admin Dates */}
+                    <div className="lg:col-span-2 space-y-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        {/* Mark To (Forward) */}
+                        <div className="space-y-1.5">
+                          <Label className="text-xs uppercase font-bold text-slate-700 dark:text-slate-300">Mark To (Forward) {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
+                          <Select value={formData.mark_to} onValueChange={v => setFormData({ ...formData, mark_to: v })}>
+                            <SelectTrigger className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl">
+                              <SelectValue placeholder="Target Section" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-white dark:bg-zinc-900 border-slate-200 dark:border-primary/20 text-slate-900 dark:text-white">
+                              {sections.map(section => (
+                                <SelectItem key={section.id} value={section.id} className="font-bold uppercase tracking-tight">
+                                  {section.name} {section.id === 'books' || section.id === 'establishment' ? '(NEW)' : ''}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {/* Outward Date */}
+                        <div className="space-y-1.5">
+                          <Label className="text-xs uppercase font-bold text-muted-foreground">Outward (Forwarding) Date</Label>
+                          <Input
+                            type="date"
+                            value={formData.outward_date}
+                            onChange={e => setFormData({ ...formData, outward_date: e.target.value })}
+                            className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl"
+                          />
+                        </div>
+
+                        {/* Additional Mark To */}
+                        {(isForwardingMode || isEditingMode) && (
+                          <div className="space-y-1.5">
+                            <Label className="text-xs uppercase font-bold text-muted-foreground">Additional Mark To <span className="text-muted-foreground/50 text-[10px]">(Optional)</span></Label>
+                            <Select
+                              value={formData.additional_mark_to || ""}
+                              onValueChange={v => setFormData({ ...formData, additional_mark_to: v })}
+                            >
+                              <SelectTrigger className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl">
+                                <SelectValue placeholder="Select additional department (optional)" />
+                              </SelectTrigger>
+                              <SelectContent className="bg-white dark:bg-zinc-900 border-slate-200 dark:border-primary/20 text-slate-900 dark:text-white">
+                                {sections.map(section => (
+                                  <SelectItem key={section.id} value={section.id} className="font-bold uppercase tracking-tight">
+                                    {section.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
                         )}
-                        {selectedVendorInfo.cnic_no && (
-                          <span className="font-mono text-[10px] text-muted-foreground">CNIC: {selectedVendorInfo.cnic_no}</span>
-                        )}
-                        {selectedVendorInfo.phone_no && (
-                          <span className="font-mono text-[10px] text-muted-foreground">Phone: {selectedVendorInfo.phone_no}</span>
+
+                        {/* Admin Dates */}
+                        {(isAdmin || allowOverrideDates) && (
+                          <>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs uppercase font-bold text-amber-600 dark:text-amber-500 flex items-center gap-1.5">
+                                <Calendar className="w-3.5 h-3.5" />
+                                Registration Date
+                                <span className="text-[9px] font-normal text-muted-foreground normal-case">(Backward date)</span>
+                              </Label>
+                              <Input
+                                type="date"
+                                value={formData.registration_date}
+                                onChange={e => setFormData({ ...formData, registration_date: e.target.value, print_date: e.target.value })}
+                                className="bg-amber-50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-500/30 text-amber-700 dark:text-amber-500 font-bold h-11 rounded-xl"
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <Label className="text-xs uppercase font-bold text-emerald-600 dark:text-emerald-500 flex items-center gap-1.5">
+                                <Printer className="w-3.5 h-3.5" />
+                                Print Date
+                                <span className="text-[9px] font-normal text-muted-foreground normal-case">(Slip date)</span>
+                              </Label>
+                              <Input
+                                type="date"
+                                value={formData.print_date}
+                                onChange={e => setFormData({ ...formData, print_date: e.target.value })}
+                                className="bg-emerald-50 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-500 font-bold h-11 rounded-xl"
+                              />
+                            </div>
+                          </>
                         )}
                       </div>
+
+                      {/* Remarks */}
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">Remarks</Label>
+                        <Input
+                          placeholder="Any additional notes or movement remarks..."
+                          value={formData.remarks}
+                          onChange={e => setFormData({ ...formData, remarks: e.target.value })}
+                          className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11 rounded-xl"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Right Column: E-Signature & Date of Sign Card */}
+                    <div className="lg:col-span-1 rounded-2xl border border-indigo-500/30 bg-indigo-50/30 dark:bg-indigo-950/20 p-4 flex flex-col justify-between space-y-3 shadow-xs">
+                      <div className="space-y-2">
+                        <Label className="text-xs uppercase font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                          <FileSignature className="w-4 h-4 text-indigo-500" /> Digital Authorization
+                        </Label>
+
+                        {!formData.signature_data ? (
+                          <Dialog open={isSignDialogOpen} onOpenChange={setIsSignDialogOpen}>
+                            <DialogTrigger asChild>
+                              <Button variant="outline" className="w-full border-dashed border-2 border-indigo-400/40 dark:border-indigo-500/30 h-24 flex flex-col gap-1.5 hover:bg-indigo-500/10 hover:border-indigo-500 transition-all rounded-xl">
+                                <PenTool className="w-5 h-5 text-indigo-500" />
+                                <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 uppercase">Click to Sign Digitally</span>
+                                <span className="text-[10px] text-muted-foreground">Draw or upload signature</span>
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent className="sm:max-w-[500px]">
+                              <DialogHeader>
+                                <DialogTitle className="flex items-center gap-2">
+                                  <FileSignature className="w-5 h-5 text-primary" />
+                                  Draw Your E-Signature
+                                </DialogTitle>
+                                <DialogDescription>
+                                  Choose to draw your signature or upload an image of your physical signature.
+                                </DialogDescription>
+                              </DialogHeader>
+
+                              <Tabs defaultValue="draw" className="w-full mt-4">
+                                <TabsList className="grid w-full grid-cols-2">
+                                  <TabsTrigger value="draw" className="gap-2">
+                                    <PenTool className="w-4 h-4" /> Draw
+                                  </TabsTrigger>
+                                  <TabsTrigger value="upload" className="gap-2">
+                                    <Upload className="w-4 h-4" /> Upload
+                                  </TabsTrigger>
+                                </TabsList>
+
+                                <TabsContent value="draw" className="flex flex-col items-center gap-4 py-4 animate-in fade-in-50 duration-300">
+                                  <div className="border-2 border-border rounded-lg bg-white overflow-hidden touch-none">
+                                    <canvas
+                                      ref={canvasRef}
+                                      width={450}
+                                      height={200}
+                                      onMouseDown={startDrawing}
+                                      onMouseUp={stopDrawing}
+                                      onMouseMove={draw}
+                                      onMouseLeave={stopDrawing}
+                                      onTouchStart={startDrawing}
+                                      onTouchEnd={stopDrawing}
+                                      onTouchMove={draw}
+                                      className="cursor-crosshair"
+                                    />
+                                  </div>
+                                  <div className="flex w-full justify-between">
+                                    <Button variant="ghost" size="sm" onClick={clearCanvas} className="text-destructive hover:text-destructive gap-2">
+                                      <ResetIcon className="w-4 h-4" /> Clear Pad
+                                    </Button>
+                                    <p className="text-[10px] text-muted-foreground italic self-center">Verification Stamp will be added automatically</p>
+                                  </div>
+                                  <div className="w-full flex justify-end gap-2 mt-2">
+                                    <Button variant="outline" onClick={() => setIsSignDialogOpen(false)}>Cancel</Button>
+                                    <Button onClick={saveSignature} className="bg-primary hover:bg-primary/90 gap-2">
+                                      Apply Signature <Check className="w-4 h-4" />
+                                    </Button>
+                                  </div>
+                                </TabsContent>
+
+                                <TabsContent value="upload" className="flex flex-col items-center gap-6 py-10 animate-in slide-in-from-bottom-2 duration-300">
+                                  <div
+                                    className="w-full max-w-[300px] border-2 border-dashed border-border rounded-xl p-10 flex flex-col items-center gap-4 hover:border-primary/50 hover:bg-primary/5 cursor-pointer transition-all group"
+                                    onClick={() => document.getElementById('signature-image-upload')?.click()}
+                                  >
+                                    <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
+                                      <ImageIcon className="w-8 h-8" />
+                                    </div>
+                                    <div className="text-center">
+                                      <p className="text-sm font-bold">Select Signature Image</p>
+                                      <p className="text-[10px] text-muted-foreground mt-1">PNG, JPG or JPEG (Max 2MB)</p>
+                                    </div>
+                                    <input
+                                      type="file"
+                                      id="signature-image-upload"
+                                      hidden
+                                      accept="image/*"
+                                      onChange={handleSignatureUpload}
+                                    />
+                                  </div>
+                                  <p className="text-center text-[10px] text-muted-foreground max-w-[300px]">
+                                    Tip: For best results, use a high-contrast image (black ink on white paper).
+                                  </p>
+                                </TabsContent>
+                              </Tabs>
+                            </DialogContent>
+                          </Dialog>
+                        ) : (
+                          <div className="relative group">
+                            <div className="border-2 border-emerald-500/30 rounded-xl p-2.5 bg-emerald-500/5 flex flex-col items-center overflow-hidden">
+                              <img src={formData.signature_data} alt="ESign" className="max-h-16 mix-blend-multiply" />
+                              <div className="mt-2 text-[9px] font-mono font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                                VERIFIED: {safeFormatDate(formData.date_of_sign)}
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-destructive text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                              onClick={() => setFormData({ ...formData, signature_data: "" })}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Date of Sign */}
+                      <div className="space-y-1.5 pt-2 border-t border-indigo-500/20">
+                        <Label className="text-xs uppercase font-bold text-muted-foreground">Date of Sign</Label>
+                        <Input
+                          type="date"
+                          value={formData.date_of_sign}
+                          onChange={e => setFormData({ ...formData, date_of_sign: e.target.value })}
+                          className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-blue-600 dark:text-blue-400 font-bold h-10 rounded-xl text-xs"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── Document Image Section (Multiple Photos Support) ── */}
+                  <div className="space-y-3 pt-3 border-t border-slate-200/80 dark:border-slate-800">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <Label className="text-xs uppercase font-bold text-muted-foreground flex items-center gap-2">
+                        <ImageIcon className="w-3.5 h-3.5 text-teal-500" />
+                        Document Photos / Scans
+                        <span className="text-[10px] font-normal normal-case text-muted-foreground">
+                          (Optional — attach one or multiple scanned pages/receipts)
+                        </span>
+                      </Label>
+                      {fileImages.length > 0 && (
+                        <Badge variant="outline" className="text-xs font-bold text-teal-600 dark:text-teal-400 border-teal-500/30 bg-teal-500/10 w-fit">
+                          {fileImages.length} {fileImages.length === 1 ? 'Photo Attached' : 'Photos Attached'}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {/* Multiple Images Preview Grid */}
+                    {fileImages.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                          {fileImages.map((imgUrl, index) => (
+                            <div
+                              key={index}
+                              className="group relative rounded-xl border border-border/60 bg-black/20 dark:bg-black/40 overflow-hidden shadow-xs hover:border-teal-500/60 transition-all aspect-square flex items-center justify-center"
+                            >
+                              <img
+                                src={imgUrl}
+                                alt={`Document photo ${index + 1}`}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform cursor-pointer"
+                                onClick={() => setPreviewGallery({ images: fileImages, initialIndex: index, title: formData.subject || "Document Photo" })}
+                              />
+                              <span className="absolute top-1.5 left-1.5 bg-black/75 text-white text-[10px] font-black px-1.5 py-0.5 rounded backdrop-blur-xs">
+                                #{index + 1}
+                              </span>
+                              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 p-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewGallery({ images: fileImages, initialIndex: index, title: formData.subject || "Document Photo" })}
+                                  className="p-1.5 rounded-md bg-white/20 hover:bg-white/40 text-white transition-colors"
+                                  title="View full size"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const updated = fileImages.filter((_, i) => i !== index);
+                                    setFileImages(updated);
+                                    setFileImage(updated[0] || "");
+                                    toast.info(`Photo #${index + 1} removed`);
+                                  }}
+                                  className="p-1.5 rounded-md bg-red-500/80 hover:bg-red-600 text-white transition-colors"
+                                  title="Remove photo"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Action Buttons */}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className={`cursor-pointer ${isUploadingImages ? 'opacity-60 pointer-events-none' : ''}`}>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={handleMultiImageUpload}
+                          disabled={isUploadingImages}
+                        />
+                        <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-border/50 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors text-xs font-bold text-foreground">
+                          {isUploadingImages ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-500" />
+                              Uploading photos...
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-3.5 h-3.5 text-teal-500" />
+                              {fileImages.length > 0 ? "+ Upload More from PC" : "Upload from PC (Multiple Allowed)"}
+                            </>
+                          )}
+                        </div>
+                      </label>
+
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedVendorInfo(null);
-                          setVendorSearchInput("");
-                          setFormData(prev => ({ ...prev, received_from: "" }));
+                          const sessionId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                          setMobileUploadSessionId(sessionId);
+                          setShowMobileUploadQR(true);
+                          setIsMobileListening(true);
+                          const channel = supabase.channel(`mobile-upload-${sessionId}`);
+                          channel
+                            .on('broadcast', { event: 'image-uploaded' }, (payload) => {
+                              if (payload?.payload?.image) {
+                                const incoming: string[] = Array.isArray(payload.payload.image)
+                                  ? payload.payload.image
+                                  : [payload.payload.image];
+                                setFileImages(prev => {
+                                  const updated = [...prev, ...incoming];
+                                  setFileImage(updated[0] || "");
+                                  return updated;
+                                });
+                                toast.success(`${incoming.length} photo(s) received from mobile!`);
+                              }
+                            })
+                            .subscribe();
                         }}
-                        className="text-[10px] text-rose-400 hover:underline"
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-500/10 border border-teal-500/30 hover:bg-teal-500/20 transition-colors text-xs font-bold text-teal-600 dark:text-teal-400"
                       >
-                        Clear Selection
+                        <ScanLine className="w-3.5 h-3.5" />
+                        {fileImages.length > 0 ? "+ Scan More from Mobile" : "Scan from Mobile"}
                       </button>
-                    </div>
-                  );
-                })()}
-              </div>
 
-              <div className="space-y-2">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Receiving Number {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
-                <Input
-                  placeholder="Enter Receiving Number"
-                  value={formData.receiving_number}
-                  onChange={e => setFormData({ ...formData, receiving_number: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 font-mono text-slate-900 dark:text-slate-100 font-semibold h-11"
-                />
-              </div>
-              {currentRole !== 'entry_operator' && (
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase font-bold text-muted-foreground">Department Number <span className="text-muted-foreground/50 text-[10px]">(Optional)</span></Label>
-                  <div className="relative group">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <FileText className="h-4 w-4 text-teal-500" />
-                    </div>
-                    <Input
-                      placeholder="e.g. DEPT-123"
-                      className="pl-10 bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-mono h-11 transition-all rounded-xl font-semibold"
-                      value={formData.department_number || ""}
-                      onChange={e => setFormData({ ...formData, department_number: e.target.value })}
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Main Category {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
-                <Select
-                  value={formData.mainCategory}
-                  onValueChange={v => setFormData({ ...formData, mainCategory: v, subCategory: "" })}
-                >
-                  <SelectTrigger className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11">
-                    <SelectValue placeholder="Select Main Category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {dynMainCats.map(mc => (
-                      <SelectItem key={mc.config_key} value={mc.config_key}>{mc.config_label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {(formData.mainCategory === 'pol_bills' || formData.mainCategory === 'pol-bills' || formData.mainCategory === 'POL Bills') ? (
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase font-bold text-muted-foreground">Fuel Station</Label>
-                  <div className="relative">
-                    <Select value={formData.fuel_station || formData.subCategory} onValueChange={v => setFormData({ ...formData, fuel_station: v, subCategory: v })}>
-                      <SelectTrigger className="w-full bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 h-11 transition-all rounded-xl font-semibold">
-                        <SelectValue placeholder="Select fuel station" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-[250px]">
-                        <SelectItem value="ISHA SERVICE STATION">ISHA SERVICE STATION</SelectItem>
-                        <SelectItem value="ALLIED PETROLIUM SERVICE">ALLIED PETROLIUM SERVICE</SelectItem>
-                        <SelectItem value="AWAMI FILLING STATION">AWAMI FILLING STATION</SelectItem>
-                        <SelectItem value="BANBHORE FILLING STATION">BANBHORE FILLING STATION</SelectItem>
-                        <SelectItem value="BROTHERS SERVICE STATION">BROTHERS SERVICE STATION</SelectItem>
-                        <SelectItem value="CENTRAL SERVICE STATION">CENTRAL SERVICE STATION</SelectItem>
-                        <SelectItem value="DILAWAR GESOLINE">DILAWAR GESOLINE</SelectItem>
-                        <SelectItem value="FAISAL FILLING STATION">FAISAL FILLING STATION</SelectItem>
-                        <SelectItem value="FANCY SERVICE STATION">FANCY SERVICE STATION</SelectItem>
-                        <SelectItem value="KARACHI SERVICE STATION">KARACHI SERVICE STATION</SelectItem>
-                        <SelectItem value="KARIMI AUTOMOBILE SERVICE">KARIMI AUTOMOBILE SERVICE</SelectItem>
-                        <SelectItem value="LANDHI GASOLINE SERVICES">LANDHI GASOLINE SERVICES</SelectItem>
-                        <SelectItem value="MACCA MOBILE SERVICE">MACCA MOBILE SERVICE</SelectItem>
-                        <SelectItem value="MADINA FILLING STATION">MADINA FILLING STATION</SelectItem>
-                        <SelectItem value="MADINA SERVICE STATION EJAZ">MADINA SERVICE STATION EJAZ</SelectItem>
-                        <SelectItem value="MADINA SERVICES STATION YASIR">MADINA SERVICES STATION YASIR</SelectItem>
-                        <SelectItem value="MANSOOR SERVICE STATION">MANSOOR SERVICE STATION</SelectItem>
-                        <SelectItem value="MUGHAL PETROLEUM SERVICES">MUGHAL PETROLEUM SERVICES</SelectItem>
-                        <SelectItem value="NOOR PETROLIUM SERVICE">NOOR PETROLIUM SERVICE</SelectItem>
-                        <SelectItem value="PAK PETROLEUM SERVICE">PAK PETROLEUM SERVICE</SelectItem>
-                        <SelectItem value="PSO FLEET CARD">PSO FLEET CARD</SelectItem>
-                        <SelectItem value="Q STAR PETROLEUM SERVICE">Q STAR PETROLEUM SERVICE</SelectItem>
-                        <SelectItem value="ROSHAN SERVICE STATION">ROSHAN SERVICE STATION</SelectItem>
-                        <SelectItem value="STADIUM SERVICE STATION">STADIUM SERVICE STATION</SelectItem>
-                        <SelectItem value="SUPER SERVICE STATION">SUPER SERVICE STATION</SelectItem>
-                        <SelectItem value="UNITED FILLING STATION">UNITED FILLING STATION</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase font-bold text-muted-foreground">Sub Category {currentRole !== 'entry_operator' && formData.mainCategory !== 'impress' && formData.mainCategory !== 'pol_bills' && <span className="text-red-500">*</span>}</Label>
-                  <Select
-                    value={formData.subCategory}
-                    onValueChange={v => setFormData({ ...formData, subCategory: v })}
-                    disabled={!formData.mainCategory}
-                  >
-                    <SelectTrigger className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11">
-                      <SelectValue placeholder={formData.mainCategory ? "Select Sub Category" : "Select Main Category First"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {formData.mainCategory && (getSubCategoriesFor(dynSubCats || [], formData.mainCategory) || []).map(sc => (
-                        <SelectItem key={sc.config_key} value={sc.config_key}>{sc.config_label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {/* Conditional Field: Employee Number */}
-              {formData.mainCategory === 'employee' && formData.subCategory && (
-                <div className="space-y-2 animate-in slide-in-from-left-2 duration-300 relative">
-                  <Label className="text-xs uppercase font-bold text-sky-500 flex items-center gap-2">
-                    <User className="w-3 h-3" /> Employee / Pension Number
-                  </Label>
-                  <div className="relative">
-                    <Input
-                      placeholder="Type Name, Emp No, or Pension No..."
-                      value={formData.employee_number}
-                      onChange={e => handleEmployeeNumberChange(e.target.value)}
-                      onFocus={() => { if (empSuggestions.length > 0) setShowEmpSuggestions(true); }}
-                      className="bg-sky-50 dark:bg-sky-950/20 border-sky-300 dark:border-sky-500/30 text-sky-800 dark:text-sky-300 font-bold focus-visible:ring-sky-500 pr-8 font-mono text-sm h-11"
-                    />
-                    {isSearchingEmp && (
-                      <div className="absolute right-2.5 top-2.5">
-                        <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Suggestions Popover Dropdown */}
-                  {showEmpSuggestions && empSuggestions.length > 0 && (
-                    <div className="mt-2 max-h-60 overflow-y-auto rounded-lg border border-white/10 bg-[#0f1115]/95 backdrop-blur-xl shadow-2xl p-1 space-y-0.5 scrollbar-thin">
-                      <div className="p-1.5 text-[9px] uppercase font-bold text-sky-400/60 tracking-wider border-b border-white/5">
-                        Lookup matches found
-                      </div>
-                      {empSuggestions.map((emp) => {
-                        const num = emp.employee_no || emp.pension_no || "N/A";
-                        return (
-                          <div
-                            key={emp.id}
-                            onClick={() => handleSelectEmployee(emp)}
-                            className="flex flex-col gap-0.5 p-2 rounded-md hover:bg-sky-500/10 cursor-pointer transition-colors text-left"
-                          >
-                            <span className="text-xs font-bold text-white">{emp.full_name}</span>
-                            <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
-                              <span className="text-sky-400 font-semibold">{num}</span>
-                              <span>•</span>
-                              <span className="uppercase text-[9px] px-1 bg-white/5 rounded">{emp.category}</span>
-                              {emp.source_tab && (
-                                <>
-                                  <span>•</span>
-                                  <span className="text-[9px] text-purple-400 font-semibold uppercase">{emp.source_tab}</span>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Verified Employee Summary Profile Card */}
-                  {selectedEmpProfile && (
-                    <div className="mt-4 p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 backdrop-blur-md space-y-3 animate-in fade-in zoom-in-95 duration-300 shadow-inner col-span-full">
-                      <div className="flex items-center justify-between border-b border-emerald-500/15 pb-2">
-                        <div className="flex items-center gap-2">
-                          <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center border border-emerald-500/30">
-                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                          </div>
-                          <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Verified KWSC Staff Profile</span>
-                        </div>
-                        <span className="px-2 py-0.5 rounded text-[8px] font-bold uppercase bg-emerald-500/20 text-emerald-400">
-                          {selectedEmpProfile.category}
-                        </span>
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-y-2 gap-x-4 text-xs">
-                        <div className="space-y-0.5">
-                          <span className="text-[9px] text-muted-foreground uppercase font-medium">Full Name</span>
-                          <p className="font-bold text-white text-sm truncate">{selectedEmpProfile.full_name}</p>
-                        </div>
-                        <div className="space-y-0.5 font-mono">
-                          <span className="text-[9px] text-muted-foreground uppercase font-medium">Employee / Pen No</span>
-                          <p className="font-bold text-white text-xs">{selectedEmpProfile.employee_no || selectedEmpProfile.pension_no || "---"}</p>
-                        </div>
-                        <div className="space-y-0.5">
-                          <span className="text-[9px] text-muted-foreground uppercase font-medium">Original source sheet</span>
-                          <p className="font-bold text-sky-400 text-xs font-mono uppercase">{selectedEmpProfile.source_tab || "UNIFIED"}</p>
-                        </div>
-                        <div className="space-y-0.5">
-                          <span className="text-[9px] text-muted-foreground uppercase font-medium">Sanctioned Net Amount</span>
-                          <p className="font-bold text-emerald-400 font-mono text-sm">
-                            Rs. {(selectedEmpProfile.cheque_amount || selectedEmpProfile.total_amount || 0).toLocaleString()}
-                          </p>
-                        </div>
-                        {selectedEmpProfile.bank_details && (
-                          <div className="col-span-2 space-y-0.5 pt-1 border-t border-emerald-500/10">
-                            <span className="text-[9px] text-muted-foreground uppercase font-medium">Bank details</span>
-                            <p className="text-white/80 italic text-[11px] truncate">{selectedEmpProfile.bank_details}</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Conditional Field: Contractor Account Selection */}
-              {formData.mainCategory === 'contractor' && (
-                <div className="space-y-2 animate-in slide-in-from-left-2 duration-300">
-                  <Label className="text-xs uppercase font-bold text-amber-500 flex items-center gap-2">
-                    <User className="w-3 h-3" /> Select Contractor
-                  </Label>
-                  <Select
-                    value={formData.employee_number} // Reusing employee_number field to store the contractor phone number
-                    onValueChange={(val) => {
-                      const selected = contractorAccounts.find(c => c.config_key === val);
-                      setFormData(prev => ({
-                        ...prev,
-                        employee_number: val,
-                        received_from: selected ? selected.config_label : prev.received_from
-                      }));
-                    }}
-                  >
-                    <SelectTrigger className="bg-amber-500/5 border-amber-500/30 text-white font-bold h-10 text-sm">
-                      <SelectValue placeholder="Select Contractor Account..." />
-                    </SelectTrigger>
-                    <SelectContent className="bg-zinc-950 border-white/10">
-                      {(contractorAccounts || []).map(account => (
-                        <SelectItem key={account.id} value={account.config_key}>
-                          {account.config_label} <span className="text-white/40 ml-2 font-mono text-xs">({account.config_key})</span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[10px] text-white/40 italic">File updates will be sent to the contractor's WhatsApp number.</p>
-                </div>
-              )}
-
-              {/* Conditional Field: Voucher Code */}
-              {formData.mainCategory === 'contractor' && formData.subCategory && (
-                <div className="space-y-2 animate-in slide-in-from-left-2 duration-300">
-                  <Label className="text-xs uppercase font-bold text-emerald-500 flex items-center gap-2">
-                    <FileText className="w-3 h-3" /> Voucher Code
-                  </Label>
-                  <Input
-                    placeholder="Enter Voucher Reference"
-                    value={formData.voucher_code}
-                    onChange={e => setFormData({ ...formData, voucher_code: e.target.value })}
-                    className="bg-emerald-500/5 border-emerald-500/30 font-bold focus-visible:ring-emerald-500"
-                  />
-                </div>
-              )}
-
-              {/* Conditional Field: Vehicle No */}
-              {((formData.mainCategory === 'contractor' && formData.subCategory === 'pol_bills') || formData.mainCategory === 'pol_bills') && (
-                <div className="space-y-2 animate-in slide-in-from-left-2 duration-300">
-                  <Label className="text-xs uppercase font-bold text-orange-500 flex items-center gap-2">
-                    <MapPin className="w-3 h-3" /> Vehicle No (Optional)
-                  </Label>
-                  <Input
-                    placeholder="Enter Vehicle Number"
-                    value={formData.vehicle_no}
-                    onChange={e => setFormData({ ...formData, vehicle_no: e.target.value })}
-                    className="bg-orange-500/5 border-orange-500/30 font-bold focus-visible:ring-orange-500"
-                  />
-                </div>
-              )}
-
-              <div className="space-y-2 lg:col-span-1">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Subject {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
-                <Input
-                  placeholder="Purpose of file"
-                  value={formData.subject}
-                  onChange={e => setFormData({ ...formData, subject: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11"
-                />
-              </div>
-
-              {(formData.mainCategory === 'employee' || formData.mainCategory === 'contractor') ? (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs uppercase font-bold text-muted-foreground">Amount (PKR) <span className="text-emerald-500 text-[9px]">(Gross Amount)</span></Label>
-                      <Input
-                        type="text"
-                        inputMode="numeric"
-                        placeholder="Enter Gross Amount"
-                        value={formatAmountWithCommas(formData.gross_amount)}
-                        onChange={e => {
-                          const clean = e.target.value.replace(/[^0-9.]/g, '');
-                          const parts = clean.split('.');
-                          const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
-                          const gross = sanitized === '' ? 0 : (parseFloat(sanitized) || 0);
-                          const ded = parseAmountValue(formData.deduction);
-                          setFormData({ ...formData, gross_amount: sanitized === '' ? '' : sanitized, amount: gross - ded });
-                        }}
-                        className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-bold h-11"
-                      />
-                      {getAmountInWords(formData.gross_amount) && (
-                        <p className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 dark:bg-emerald-500/15 px-2.5 py-1 rounded-md border border-emerald-500/20 italic">
-                          <span className="font-bold not-italic">In Words:</span> {getAmountInWords(formData.gross_amount)}
-                        </p>
-                      )}
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs uppercase font-bold text-muted-foreground">Deduction (PKR)</Label>
-                      <Input
-                        type="text"
-                        inputMode="numeric"
-                        placeholder="Enter Deduction"
-                        value={formatAmountWithCommas(formData.deduction)}
-                        onChange={e => {
-                          const clean = e.target.value.replace(/[^0-9.]/g, '');
-                          const parts = clean.split('.');
-                          const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
-                          const ded = sanitized === '' ? 0 : (parseFloat(sanitized) || 0);
-                          const gross = parseAmountValue(formData.gross_amount);
-                          setFormData({ ...formData, deduction: sanitized === '' ? '' : sanitized, amount: gross - ded });
-                        }}
-                        className="bg-white dark:bg-slate-900 border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 font-bold h-11"
-                      />
-                      {getAmountInWords(formData.deduction) && (
-                        <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400 bg-rose-500/10 dark:bg-rose-500/15 px-2.5 py-1 rounded-md border border-rose-500/20 italic">
-                          <span className="font-bold not-italic">In Words:</span> {getAmountInWords(formData.deduction)}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs uppercase font-bold text-muted-foreground">Amount (PKR) <span className="text-emerald-500 text-[9px]">(Net Amount)</span></Label>
-                    <Input
-                      type="text"
-                      disabled
-                      value={formData.amount !== undefined && formData.amount !== null && formData.amount !== "" ? (Number(formData.amount).toLocaleString('en-US') || "0") : "0"}
-                      className="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-800 font-black text-emerald-700 dark:text-emerald-400 opacity-90 cursor-not-allowed h-11 tracking-wider"
-                    />
-                    {getAmountInWords(formData.amount) && (
-                      <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 dark:bg-emerald-500/15 px-2.5 py-1 rounded-md border border-emerald-500/20 italic">
-                        <span className="font-bold not-italic">In Words:</span> {getAmountInWords(formData.amount)}
-                      </p>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs uppercase font-bold text-muted-foreground">Amount (PKR) <span className="text-emerald-500 text-[9px]">(Net Amount)</span></Label>
-                    <div className="flex items-center gap-2">
-                      <Checkbox
-                        id="no_amount_chk"
-                        checked={formData.no_amount || false}
-                        onCheckedChange={(checked) => setFormData({ ...formData, no_amount: !!checked, amount: checked ? 0 : formData.amount })}
-                      />
-                      <label htmlFor="no_amount_chk" className="text-[11px] font-semibold text-slate-600 dark:text-white/60 cursor-pointer select-none">No Amount</label>
-                    </div>
-                  </div>
-                  <Input
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="Enter Amount"
-                    value={formData.no_amount ? "0" : formatAmountWithCommas(formData.amount)}
-                    disabled={formData.no_amount || false}
-                    onChange={e => {
-                      const clean = e.target.value.replace(/[^0-9.]/g, '');
-                      const parts = clean.split('.');
-                      const sanitized = parts[0] + (parts.length > 1 ? '.' + parts.slice(1).join('') : '');
-                      setFormData({ ...formData, amount: sanitized === '' ? '' : sanitized });
-                    }}
-                    className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-bold h-11 disabled:opacity-40 disabled:cursor-not-allowed"
-                  />
-                  {!formData.no_amount && getAmountInWords(formData.amount) && (
-                    <p className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 dark:bg-emerald-500/15 px-2.5 py-1 rounded-md border border-emerald-500/20 italic">
-                      <span className="font-bold not-italic">In Words:</span> {getAmountInWords(formData.amount)}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <div className="space-y-4">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Digital Authorization (E-Signature)</Label>
-
-                {!formData.signature_data ? (
-                  <Dialog open={isSignDialogOpen} onOpenChange={setIsSignDialogOpen}>
-                    <DialogTrigger asChild>
-                      <Button variant="outline" className="w-full border-dashed border-2 h-20 flex flex-col gap-1 hover:bg-primary/5 hover:border-primary/50 transition-all">
-                        <PenTool className="w-5 h-5 text-muted-foreground" />
-                        <span className="text-[10px] font-bold uppercase">Click to Sign Digitally</span>
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-[500px]">
-                      <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2">
-                          <FileSignature className="w-5 h-5 text-primary" />
-                          Draw Your E-Signature
-                        </DialogTitle>
-                        <DialogDescription>
-                          Choose to draw your signature or upload an image of your physical signature.
-                        </DialogDescription>
-                      </DialogHeader>
-
-                      <Tabs defaultValue="draw" className="w-full mt-4">
-                        <TabsList className="grid w-full grid-cols-2">
-                          <TabsTrigger value="draw" className="gap-2">
-                            <PenTool className="w-4 h-4" /> Draw
-                          </TabsTrigger>
-                          <TabsTrigger value="upload" className="gap-2">
-                            <Upload className="w-4 h-4" /> Upload
-                          </TabsTrigger>
-                        </TabsList>
-
-                        <TabsContent value="draw" className="flex flex-col items-center gap-4 py-4 animate-in fade-in-50 duration-300">
-                          <div className="border-2 border-border rounded-lg bg-white overflow-hidden touch-none">
-                            <canvas
-                              ref={canvasRef}
-                              width={450}
-                              height={200}
-                              onMouseDown={startDrawing}
-                              onMouseUp={stopDrawing}
-                              onMouseMove={draw}
-                              onMouseLeave={stopDrawing}
-                              onTouchStart={startDrawing}
-                              onTouchEnd={stopDrawing}
-                              onTouchMove={draw}
-                              className="cursor-crosshair"
-                            />
-                          </div>
-                          <div className="flex w-full justify-between">
-                            <Button variant="ghost" size="sm" onClick={clearCanvas} className="text-destructive hover:text-destructive gap-2">
-                              <ResetIcon className="w-4 h-4" /> Clear Pad
-                            </Button>
-                            <p className="text-[10px] text-muted-foreground italic self-center">Verification Stamp will be added automatically</p>
-                          </div>
-                          <div className="w-full flex justify-end gap-2 mt-2">
-                            <Button variant="outline" onClick={() => setIsSignDialogOpen(false)}>Cancel</Button>
-                            <Button onClick={saveSignature} className="bg-primary hover:bg-primary/90 gap-2">
-                              Apply Signature <Check className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </TabsContent>
-
-                        <TabsContent value="upload" className="flex flex-col items-center gap-6 py-10 animate-in slide-in-from-bottom-2 duration-300">
-                          <div
-                            className="w-full max-w-[300px] border-2 border-dashed border-border rounded-xl p-10 flex flex-col items-center gap-4 hover:border-primary/50 hover:bg-primary/5 cursor-pointer transition-all group"
-                            onClick={() => document.getElementById('signature-image-upload')?.click()}
-                          >
-                            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
-                              <ImageIcon className="w-8 h-8" />
-                            </div>
-                            <div className="text-center">
-                              <p className="text-sm font-bold">Select Signature Image</p>
-                              <p className="text-[10px] text-muted-foreground mt-1">PNG, JPG or JPEG (Max 2MB)</p>
-                            </div>
-                            <input
-                              type="file"
-                              id="signature-image-upload"
-                              hidden
-                              accept="image/*"
-                              onChange={handleSignatureUpload}
-                            />
-                          </div>
-                          <p className="text-center text-[10px] text-muted-foreground max-w-[300px]">
-                            Tip: For best results, use a high-contrast image (black ink on white paper).
-                          </p>
-                        </TabsContent>
-                      </Tabs>
-                    </DialogContent>
-                  </Dialog>
-                ) : (
-                  <div className="relative group">
-                    <div className="border-2 border-emerald-500/30 rounded-lg p-2 bg-emerald-500/5 flex flex-col items-center overflow-hidden">
-                      <img src={formData.signature_data} alt="ESign" className="max-h-16 mix-blend-multiply" />
-                      <div className="mt-2 text-[8px] font-mono text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                        VERIFIED: {safeFormatDate(formData.date_of_sign)}
-                      </div>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-destructive text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
-                      onClick={() => setFormData({ ...formData, signature_data: "" })}
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </Button>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Date of Sign</Label>
-                <Input
-                  type="date"
-                  value={formData.date_of_sign}
-                  onChange={e => setFormData({ ...formData, date_of_sign: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-blue-600 dark:text-blue-400 font-bold h-11"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Mark To (Forward) {currentRole !== 'entry_operator' && <span className="text-red-500">*</span>}</Label>
-                <Select value={formData.mark_to} onValueChange={v => setFormData({ ...formData, mark_to: v })}>
-                  <SelectTrigger className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11">
-                    <SelectValue placeholder="Target Section" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-white dark:bg-zinc-900 border-slate-200 dark:border-primary/20 text-slate-900 dark:text-white">
-                    {sections.map(section => (
-                      <SelectItem key={section.id} value={section.id} className="font-bold uppercase tracking-tight">
-                        {section.name} {section.id === 'books' || section.id === 'establishment' ? '(NEW)' : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {(isForwardingMode || isEditingMode) && (
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase font-bold text-muted-foreground">Additional Mark To <span className="text-muted-foreground/50 text-[10px]">(Optional)</span></Label>
-                  <Select
-                    value={formData.additional_mark_to || ""}
-                    onValueChange={v => setFormData({ ...formData, additional_mark_to: v })}
-                  >
-                    <SelectTrigger className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11">
-                      <SelectValue placeholder="Select additional department (optional)" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white dark:bg-zinc-900 border-slate-200 dark:border-primary/20 text-slate-900 dark:text-white">
-                      {sections.map(section => (
-                        <SelectItem key={section.id} value={section.id} className="font-bold uppercase tracking-tight">
-                          {section.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Outward (Forwarding) Date</Label>
-                <Input
-                  type="date"
-                  value={formData.outward_date}
-                  onChange={e => setFormData({ ...formData, outward_date: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11"
-                />
-              </div>
-
-              {(isAdmin || allowOverrideDates) && (
-                <>
-                  <div className="space-y-2">
-                    <Label className="text-xs uppercase font-bold text-amber-600 dark:text-amber-500 flex items-center gap-2">
-                      <Calendar className="w-3 h-3" />
-                      Registration Date
-                      <span className="text-[9px] font-normal text-muted-foreground normal-case">(Backward date allowed)</span>
-                    </Label>
-                    <Input
-                      type="date"
-                      value={formData.registration_date}
-                      onChange={e => setFormData({ ...formData, registration_date: e.target.value, print_date: e.target.value })}
-                      className="bg-amber-50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-500/30 text-amber-700 dark:text-amber-500 font-bold h-11 focus-visible:ring-amber-500"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label className="text-xs uppercase font-bold text-emerald-600 dark:text-emerald-500 flex items-center gap-2">
-                      <Printer className="w-3 h-3" />
-                      Print Date
-                      <span className="text-[9px] font-normal text-muted-foreground normal-case">(Shown on print slip)</span>
-                    </Label>
-                    <Input
-                      type="date"
-                      value={formData.print_date}
-                      onChange={e => setFormData({ ...formData, print_date: e.target.value })}
-                      className="bg-emerald-50 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-500 font-bold h-11 focus-visible:ring-emerald-500"
-                    />
-                  </div>
-                </>
-              )}
-
-              <div className="space-y-2 lg:col-span-3">
-                <Label className="text-xs uppercase font-bold text-muted-foreground">Remarks</Label>
-                <Input
-                  placeholder="Any additional notes..."
-                  value={formData.remarks}
-                  onChange={e => setFormData({ ...formData, remarks: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold h-11"
-                />
-              </div>
-
-              {/* ── Document Image Section (Multiple Photos Support) ── */}
-              <div className="space-y-4 lg:col-span-3 border border-dashed border-border/50 rounded-xl p-4 bg-muted/10">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <Label className="text-xs uppercase font-bold text-muted-foreground flex items-center gap-2">
-                    <ImageIcon className="w-3.5 h-3.5 text-teal-500" />
-                    Document Photos / Scans
-                    <span className="text-[10px] font-normal normal-case text-muted-foreground">
-                      (Optional — attach one or multiple scanned pages/receipts)
-                    </span>
-                  </Label>
-                  {fileImages.length > 0 && (
-                    <Badge variant="outline" className="text-xs font-bold text-teal-600 dark:text-teal-400 border-teal-500/30 bg-teal-500/10 w-fit">
-                      {fileImages.length} {fileImages.length === 1 ? 'Photo Attached' : 'Photos Attached'}
-                    </Badge>
-                  )}
-                </div>
-
-                {/* Multiple Images Preview Grid */}
-                {fileImages.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                      {fileImages.map((imgUrl, index) => (
-                        <div
-                          key={index}
-                          className="group relative rounded-xl border border-border/60 bg-black/20 dark:bg-black/40 overflow-hidden shadow-xs hover:border-teal-500/60 transition-all aspect-square flex items-center justify-center"
-                        >
-                          <img
-                            src={imgUrl}
-                            alt={`Document photo ${index + 1}`}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform cursor-pointer"
-                            onClick={() => setPreviewGallery({ images: fileImages, initialIndex: index, title: formData.subject || "Document Photo" })}
-                          />
-                          {/* Photo number tag */}
-                          <span className="absolute top-1.5 left-1.5 bg-black/75 text-white text-[10px] font-black px-1.5 py-0.5 rounded backdrop-blur-xs">
-                            #{index + 1}
-                          </span>
-                          {/* Quick action buttons overlay */}
-                          <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 p-2">
-                            <button
-                              type="button"
-                              onClick={() => setPreviewGallery({ images: fileImages, initialIndex: index, title: formData.subject || "Document Photo" })}
-                              className="p-1.5 rounded-md bg-white/20 hover:bg-white/40 text-white transition-colors"
-                              title="View full size"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const updated = fileImages.filter((_, i) => i !== index);
-                                setFileImages(updated);
-                                setFileImage(updated[0] || "");
-                                toast.info(`Photo #${index + 1} removed`);
-                              }}
-                              className="p-1.5 rounded-md bg-red-500/80 hover:bg-red-600 text-white transition-colors"
-                              title="Remove photo"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Action Buttons */}
-                <div className="flex flex-wrap items-center gap-3">
-                  {/* Desktop file input */}
-                  <label className={`cursor-pointer ${isUploadingImages ? 'opacity-60 pointer-events-none' : ''}`}>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="hidden"
-                      onChange={handleMultiImageUpload}
-                      disabled={isUploadingImages}
-                    />
-                    <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted/40 border border-border/50 hover:bg-muted/60 transition-colors text-xs font-bold text-foreground">
-                      {isUploadingImages ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-500" />
-                          Uploading photos...
-                        </>
-                      ) : (
-                        <>
-                          <Upload className="w-3.5 h-3.5 text-teal-500" />
-                          {fileImages.length > 0 ? "+ Upload More from PC" : "Upload from PC (Multiple Allowed)"}
-                        </>
-                      )}
-                    </div>
-                  </label>
-
-                  {/* Mobile QR scan button */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const sessionId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                      setMobileUploadSessionId(sessionId);
-                      setShowMobileUploadQR(true);
-                      setIsMobileListening(true);
-                      // Subscribe to Supabase Realtime broadcast
-                      const channel = supabase.channel(`mobile-upload-${sessionId}`);
-                      channel
-                        .on('broadcast', { event: 'image-uploaded' }, (payload) => {
-                          if (payload?.payload?.image) {
-                            const incoming: string[] = Array.isArray(payload.payload.image)
-                              ? payload.payload.image
-                              : [payload.payload.image];
-                            setFileImages(prev => {
-                              const updated = [...prev, ...incoming];
-                              setFileImage(updated[0] || "");
-                              return updated;
-                            });
-                            toast.success(`${incoming.length} photo(s) received from mobile!`);
-                          }
-                        })
-                        .subscribe();
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-teal-500/10 border border-teal-500/30 hover:bg-teal-500/20 transition-colors text-xs font-bold text-teal-500"
-                  >
-                    <ScanLine className="w-3.5 h-3.5" />
-                    {fileImages.length > 0 ? "+ Scan More from Mobile" : "Scan from Mobile"}
-                  </button>
-
-                  {fileImages.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm("Are you sure you want to remove all attached photos?")) {
-                          setFileImages([]);
-                          setFileImage("");
-                          toast.info("All document photos removed");
-                        }
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 text-red-500 text-xs font-bold transition-colors sm:ml-auto"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      Remove All
-                    </button>
-                  )}
-                </div>
-
-                {/* Mobile QR Modal */}
-                {showMobileUploadQR && mobileUploadSessionId && (() => {
-                  const mobileBaseUrl = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-                    ? `${window.location.protocol}//${serverNetworkIp}:8080`
-                    : window.location.origin;
-                  const mobileUploadUrl = `${mobileBaseUrl}/mobile-upload/${mobileUploadSessionId}`;
-                  return (
-                    <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
-                      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm space-y-4 text-center">
-                        <h3 className="text-base font-black text-white">Scan with Mobile Camera</h3>
-                        <p className="text-xs text-zinc-400">
-                          Scan the QR code with your mobile camera to upload <strong>multiple photos</strong> (page-by-page via camera or multiple from gallery).
-                        </p>
-                        <div className="flex justify-center p-3 bg-white rounded-xl shadow-xl w-fit mx-auto">
-                          <QRCodeCanvas
-                            value={mobileUploadUrl}
-                            size={180}
-                            level="M"
-                            includeMargin={false}
-                          />
-                        </div>
-                        <p className="text-[10px] text-zinc-500 font-mono break-all">
-                          {mobileUploadUrl}
-                        </p>
-                        {fileImages.length > 0 && (
-                          <div className="p-2.5 rounded-lg bg-teal-500/15 border border-teal-500/40 text-teal-300 text-xs font-bold flex items-center justify-center gap-1.5">
-                            <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0" />
-                            {fileImages.length} photo(s) received on desktop
-                          </div>
-                        )}
-                        {isMobileListening && (
-                          <div className="flex items-center justify-center gap-2 text-xs text-teal-400 font-bold">
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            Live sync active — taking mobile photos...
-                          </div>
-                        )}
-                        <Button
+                      {fileImages.length > 0 && (
+                        <button
                           type="button"
                           onClick={() => {
-                            setShowMobileUploadQR(false);
-                            setIsMobileListening(false);
+                            if (confirm("Are you sure you want to remove all attached photos?")) {
+                              setFileImages([]);
+                              setFileImage("");
+                              toast.info("All document photos removed");
+                            }
                           }}
-                          className="w-full bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition-colors"
+                          className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 text-red-500 text-xs font-bold transition-colors sm:ml-auto"
                         >
-                          Done / Close
-                        </Button>
-                      </div>
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Remove All
+                        </button>
+                      )}
                     </div>
-                  );
-                })()}
+
+                    {/* Mobile QR Modal */}
+                    {showMobileUploadQR && mobileUploadSessionId && (() => {
+                      const mobileBaseUrl = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+                        ? `${window.location.protocol}//${serverNetworkIp}:8080`
+                        : window.location.origin;
+                      const mobileUploadUrl = `${mobileBaseUrl}/mobile-upload/${mobileUploadSessionId}`;
+                      return (
+                        <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
+                          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm space-y-4 text-center">
+                            <h3 className="text-base font-black text-white">Scan with Mobile Camera</h3>
+                            <p className="text-xs text-zinc-400">
+                              Scan the QR code with your mobile camera to upload <strong>multiple photos</strong> (page-by-page via camera or multiple from gallery).
+                            </p>
+                            <div className="flex justify-center p-3 bg-white rounded-xl shadow-xl w-fit mx-auto">
+                              <QRCodeCanvas
+                                value={mobileUploadUrl}
+                                size={180}
+                                level="M"
+                                includeMargin={false}
+                              />
+                            </div>
+                            <p className="text-[10px] text-zinc-500 font-mono break-all">
+                              {mobileUploadUrl}
+                            </p>
+                            {fileImages.length > 0 && (
+                              <div className="p-2.5 rounded-lg bg-teal-500/15 border border-teal-500/40 text-teal-300 text-xs font-bold flex items-center justify-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0" />
+                                {fileImages.length} photo(s) received on desktop
+                              </div>
+                            )}
+                            {isMobileListening && (
+                              <div className="flex items-center justify-center gap-2 text-xs text-teal-400 font-bold">
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                Live sync active — taking mobile photos...
+                              </div>
+                            )}
+                            <Button
+                              type="button"
+                              onClick={() => {
+                                setShowMobileUploadQR(false);
+                                setIsMobileListening(false);
+                              }}
+                              className="w-full bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition-colors"
+                            >
+                              Done / Close
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+
               </div>
-            </div>
             </CardContent>
 
             {/* Journey History at the Bottom */}
@@ -7053,7 +7677,7 @@ export default function FileTracking() {
               <div className="flex flex-col items-center gap-1">
                 <div className="relative inline-flex items-center justify-center border border-black p-1 bg-white">
                   <img
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(`${window.location.origin}/public-track/${selectedBill.cfo_diary_number || selectedBill.diary_no}/${selectedBill.receiving_number || selectedBill.tracking_id}?sec=${selectedBill.mark_to || selectedBill.current_status || 'CFO'}`)}`}
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(getPublicTrackUrl(selectedBill.cfo_diary_number || selectedBill.diary_no, selectedBill.receiving_number || selectedBill.tracking_id, `sec=${selectedBill.mark_to || selectedBill.current_status || 'CFO'}`))}`}
                     alt="QR Code"
                     className="w-24 h-24"
                   />
@@ -7308,7 +7932,7 @@ export default function FileTracking() {
                         <div data-qr-white className="qr-code-white-card bg-white p-3.5 rounded-xl border-2 border-[#1e3a8a] dark:border-sky-400 print:border-[#1e3a8a] flex flex-col items-center shadow-md" style={{ backgroundColor: '#ffffff' }}>
                           <div data-qr-white className="relative inline-flex items-center justify-center p-2 rounded-lg bg-white" style={{ backgroundColor: '#ffffff' }}>
                             <QRCodeCanvas
-                              value={`${window.location.origin}/public-track/${qrFullScreen?.diary || qrFullScreen?.receiving}/${qrFullScreen?.receiving || qrFullScreen?.diary}`}
+                              value={getPublicTrackUrl(qrFullScreen?.diary, qrFullScreen?.receiving)}
                               size={140}
                               level="H"
                               fgColor="#000000"
@@ -7383,7 +8007,7 @@ export default function FileTracking() {
                 <div className="thermal-only hidden">
                   <div style={{ marginRight: '2mm' }}>
                     <img
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(`${window.location.origin}/public-track/${qrFullScreen?.diary}/${qrFullScreen?.receiving}`)}&color=000000&margin=0`}
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(getPublicTrackUrl(qrFullScreen?.diary, qrFullScreen?.receiving))}&color=000000&margin=0`}
                       alt="Thermal QR"
                       style={{ width: '11mm', height: '11mm' }}
                     />
@@ -7724,7 +8348,7 @@ export default function FileTracking() {
                       <div className="text-center">
                         <div className="relative inline-flex items-center justify-center mx-auto border border-zinc-200 p-1 rounded-md bg-white">
                           <img 
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(`${window.location.origin}/public-track/${ticket.cfo_diary_number}/${ticket.receiving_number}`)}&color=0ea5e9`}
+                            src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(getPublicTrackUrl(ticket.cfo_diary_number, ticket.receiving_number))}&color=0ea5e9`}
                             alt="QR Code" 
                             className="w-16 h-16"
                           />
@@ -7749,7 +8373,7 @@ export default function FileTracking() {
                   
                   <div className="absolute -right-16 -top-16 opacity-[0.03] pointer-events-none z-0 transform rotate-12">
                     <img 
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(`${window.location.origin}/public-track/${ticket.cfo_diary_number}/${ticket.receiving_number}`)}&color=000000&margin=0`}
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(getPublicTrackUrl(ticket.cfo_diary_number, ticket.receiving_number))}&color=000000&margin=0`}
                       alt="Watermark QR" 
                       className="w-96 h-96 blur-[2px]"
                     />
@@ -7918,6 +8542,438 @@ export default function FileTracking() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 1. QR Code Scanner Dialog ── */}
+      <Dialog open={isQrScannerOpen} onOpenChange={(open) => {
+        setIsQrScannerOpen(open);
+        if (!open) {
+          setUseCameraScanner(false);
+          setQrScanInputVal("");
+        }
+      }}>
+        <DialogContent className="sm:max-w-[480px] bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-2xl">
+          <DialogHeader>
+            <div className="flex items-center gap-3 mb-1">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/40 text-[#1e3a8a] dark:text-sky-400 flex items-center justify-center">
+                <ScanLine className="w-5 h-5 animate-pulse" />
+              </div>
+              <div>
+                <DialogTitle className="text-lg font-bold text-slate-900 dark:text-white">
+                  Scan File QR Code
+                </DialogTitle>
+                <DialogDescription className="text-xs text-slate-500">
+                  Scan with physical barcode gun, camera, or paste tracking URL
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-4 pt-2">
+            {/* Mode Switcher: Input/Gun vs Camera */}
+            <div className="flex rounded-xl p-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+              <button
+                type="button"
+                onClick={() => setUseCameraScanner(false)}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  !useCameraScanner
+                    ? "bg-white dark:bg-slate-900 text-[#1e3a8a] dark:text-sky-400 shadow-sm"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                }`}
+              >
+                <ScanLine className="w-3.5 h-3.5" />
+                <span>Scanner Gun / Text</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setUseCameraScanner(true)}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  useCameraScanner
+                    ? "bg-white dark:bg-slate-900 text-[#1e3a8a] dark:text-sky-400 shadow-sm"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                }`}
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span>Camera Scanner</span>
+              </button>
+            </div>
+
+            {useCameraScanner ? (
+              /* Camera Stream View */
+              <div className="relative rounded-2xl overflow-hidden bg-black border border-slate-800 h-64 flex items-center justify-center">
+                <video
+                  ref={cameraVideoRef}
+                  playsInline
+                  autoPlay
+                  muted
+                  className="w-full h-full object-cover"
+                />
+                {/* Visual Laser Guide */}
+                <div className="absolute inset-x-8 top-1/2 -translate-y-1/2 h-44 border-2 border-emerald-400/80 rounded-xl pointer-events-none flex items-center justify-center">
+                  <div className="w-full h-0.5 bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse" />
+                </div>
+                <div className="absolute bottom-2 inset-x-0 text-center">
+                  <span className="text-[11px] font-bold text-white/80 bg-black/60 px-3 py-1 rounded-full backdrop-blur-xs">
+                    Align QR Code within the box
+                  </span>
+                </div>
+              </div>
+            ) : (
+              /* Barcode Scanner Gun / Input View */
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Scanner Gun Input / Code / URL
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      autoFocus
+                      value={qrScanInputVal}
+                      onChange={(e) => setQrScanInputVal(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          fetchAndShowFileDetails(qrScanInputVal);
+                        }
+                      }}
+                      placeholder="Point scanner gun or paste code..."
+                      className="pl-10 pr-4 h-12 text-sm font-mono font-bold bg-slate-50 dark:bg-slate-900 border-slate-300 dark:border-slate-700 focus-visible:ring-[#1e3a8a]"
+                      disabled={isFetchingScannedFile}
+                    />
+                    <ScanLine className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-200/60 dark:border-blue-900/40 text-xs text-blue-900 dark:text-blue-200 space-y-1">
+                  <p className="font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                    Automatic Scanning Supported:
+                  </p>
+                  <p className="text-[11px] text-blue-800/80 dark:text-blue-300">
+                    Just pull the trigger on your USB/wireless scanner gun. It will instantly decode and show all file details.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-2">
+              <Button
+                variant="outline"
+                className="flex-1 rounded-xl"
+                onClick={() => {
+                  setIsQrScannerOpen(false);
+                  setUseCameraScanner(false);
+                  setQrScanInputVal("");
+                }}
+              >
+                Cancel
+              </Button>
+              {!useCameraScanner && (
+                <Button
+                  className="flex-1 rounded-xl bg-[#1e3a8a] hover:bg-[#1e3a8a]/90 text-white font-bold"
+                  disabled={!qrScanInputVal.trim() || isFetchingScannedFile}
+                  onClick={() => fetchAndShowFileDetails(qrScanInputVal)}
+                >
+                  {isFetchingScannedFile ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Searching...
+                    </>
+                  ) : (
+                    "View File Details"
+                  )}
+                </Button>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 2. Comprehensive Scanned File Details Modal ── */}
+      <Dialog open={isScannedFileModalOpen} onOpenChange={setIsScannedFileModalOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto p-0 rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 shadow-2xl">
+          {scannedFileRecord && (
+            <div>
+              {/* Header Banner */}
+              <div className="p-6 bg-gradient-to-r from-[#1e3a8a] via-blue-900 to-indigo-950 text-white rounded-t-2xl relative overflow-hidden">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 relative z-10">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[10px] uppercase font-bold tracking-widest text-blue-200">
+                        CFO Diary Number
+                      </span>
+                      <Badge className={`text-[10px] font-bold ${
+                        scannedFileRecord.mark_to === "exited"
+                          ? "bg-rose-500 text-white"
+                          : "bg-emerald-500 text-white"
+                      }`}>
+                        {scannedFileRecord.mark_to === "exited" ? "EXITED" : scannedFileRecord.status || "IN-PROCESS"}
+                      </Badge>
+                      {scannedFileRecord.approval_status && (
+                        <Badge variant="outline" className="text-[10px] text-white border-white/30 uppercase">
+                          {scannedFileRecord.approval_status}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-2xl font-black font-mono tracking-tight text-white">
+                        {scannedFileRecord.cfo_diary_number || "NO DIARY"}
+                      </h2>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          safeCopyToClipboard(scannedFileRecord.cfo_diary_number || "");
+                          toast.success("Diary Number copied!");
+                        }}
+                        className="p-1 rounded-md hover:bg-white/10 text-white/70 hover:text-white transition-all"
+                        title="Copy Diary Number"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex sm:flex-col items-end gap-1 font-mono text-xs text-blue-200">
+                    <div>Rec #: <strong className="text-white">{scannedFileRecord.receiving_number || "---"}</strong></div>
+                    <div>Track ID: <strong className="text-white">{scannedFileRecord.tracking_id || "---"}</strong></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Main Content Body */}
+              <div className="p-6 space-y-5">
+                {/* Linked Parent File Notification (if linked) */}
+                {scannedFileRecord.parent_diary_number && (
+                  <div className="p-3.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-xs font-bold text-indigo-900 dark:text-indigo-200">
+                      <Link2 className="w-4 h-4 text-indigo-600" />
+                      <span>Linked Parent File:</span>
+                      <Badge className="bg-indigo-600 text-white font-mono text-xs">
+                        {scannedFileRecord.parent_diary_number}
+                      </Badge>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs border-indigo-300 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100"
+                      onClick={() => {
+                        setIsScannedFileModalOpen(false);
+                        navigate("/book-section/linked-file-tracking", {
+                          state: { search: scannedFileRecord.parent_diary_number }
+                        });
+                      }}
+                    >
+                      View Chain
+                    </Button>
+                  </div>
+                )}
+
+                {/* Subject / Nature of Work */}
+                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 space-y-1">
+                  <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                    Subject / Nature of Work
+                  </div>
+                  <div className="text-base font-bold text-slate-900 dark:text-slate-100">
+                    {scannedFileRecord.subject || "No subject specified"}
+                  </div>
+                </div>
+
+                {/* Grid 4 Overview Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
+                      Received From
+                    </span>
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate block">
+                      {scannedFileRecord.received_from || "---"}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
+                      Current Section
+                    </span>
+                    <span className="text-xs font-bold text-blue-700 dark:text-sky-400 truncate block uppercase">
+                      {scannedFileRecord.mark_to || "---"}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
+                      Category
+                    </span>
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate block capitalize">
+                      {scannedFileRecord.main_category ? `${scannedFileRecord.main_category} / ${scannedFileRecord.sub_category || ''}` : '---'}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
+                      Amount (PKR)
+                    </span>
+                    <span className="text-xs font-bold font-mono text-emerald-700 dark:text-emerald-400 truncate block">
+                      {scannedFileRecord.amount ? `Rs. ${Number(scannedFileRecord.amount).toLocaleString('en-PK')}` : '---'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Additional Details */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-700/60">
+                    <Calendar className="w-4 h-4 text-slate-400" />
+                    <div>
+                      <span className="text-[10px] text-slate-400 block font-semibold">Inward Date</span>
+                      <span className="font-bold text-slate-700 dark:text-slate-300">
+                        {scannedFileRecord.inward_date || scannedFileRecord.created_at?.split('T')[0] || '---'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-700/60">
+                    <MapPin className="w-4 h-4 text-slate-400" />
+                    <div>
+                      <span className="text-[10px] text-slate-400 block font-semibold">Additional Mark To</span>
+                      <span className="font-bold text-slate-700 dark:text-slate-300">
+                        {scannedFileRecord.additional_mark_to || 'None'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-700/60">
+                    <ShieldCheck className="w-4 h-4 text-slate-400" />
+                    <div>
+                      <span className="text-[10px] text-slate-400 block font-semibold">Created By</span>
+                      <span className="font-bold text-slate-700 dark:text-slate-300 truncate max-w-[120px] block">
+                        {scannedFileRecord.created_by || 'Staff'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Movement History Timeline */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                      <History className="w-4 h-4 text-[#1e3a8a]" />
+                      Movement History ({scannedFileRecord.history?.length || 0} Steps)
+                    </h3>
+                  </div>
+
+                  <div className="max-h-44 overflow-y-auto space-y-2 border border-slate-200 dark:border-slate-700 rounded-xl p-3 bg-slate-50/50 dark:bg-slate-900/50">
+                    {scannedFileRecord.history && scannedFileRecord.history.length > 0 ? (
+                      scannedFileRecord.history.map((step: any, idx: number) => (
+                        <div
+                          key={idx}
+                          className="flex items-start gap-3 p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 text-xs shadow-2xs"
+                        >
+                          <div className="w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-sky-300 flex items-center justify-center font-bold text-[10px] shrink-0">
+                            {idx + 1}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-slate-800 dark:text-slate-200 uppercase">
+                                {step.location || step.step || "Step"}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {step.date ? new Date(step.date).toLocaleString() : ""}
+                              </span>
+                            </div>
+                            {step.remarks && (
+                              <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5 italic">
+                                "{step.remarks}"
+                              </p>
+                            )}
+                            {step.processed_by && (
+                              <span className="text-[10px] text-slate-400 block mt-0.5">
+                                By: {step.processed_by}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-center py-4 text-xs text-slate-400">
+                        No movement history recorded yet.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Attached Document Photos (if available) */}
+                {((scannedFileRecord.file_images && scannedFileRecord.file_images.length > 0) || scannedFileRecord.file_url) && (
+                  <div className="space-y-2 pt-1">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                      <ImageIcon className="w-4 h-4 text-[#1e3a8a]" />
+                      Attached Documents & Slips
+                    </h3>
+                    <div className="flex flex-wrap gap-2">
+                      {(scannedFileRecord.file_images || (scannedFileRecord.file_url ? [scannedFileRecord.file_url] : [])).map((imgUrl: string, imgIdx: number) => (
+                        <div
+                          key={imgIdx}
+                          onClick={() => {
+                            setPreviewGallery({
+                              images: scannedFileRecord.file_images || [scannedFileRecord.file_url],
+                              initialIndex: imgIdx,
+                              title: scannedFileRecord.cfo_diary_number
+                            });
+                          }}
+                          className="w-20 h-20 rounded-xl overflow-hidden border border-slate-300 hover:border-blue-500 cursor-pointer shadow-xs transition-all hover:scale-105 relative group"
+                        >
+                          <img src={imgUrl} alt={`Doc ${imgIdx + 1}`} className="w-full h-full object-cover" />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity">
+                            <Eye className="w-4 h-4" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer Actions */}
+              <div className="p-4 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 rounded-b-2xl">
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 font-bold"
+                    onClick={() => {
+                      handleQRClick(
+                        scannedFileRecord.cfo_diary_number,
+                        scannedFileRecord.receiving_number,
+                        scannedFileRecord.print_date,
+                        scannedFileRecord.created_at
+                      );
+                    }}
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Print Slip</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 font-bold"
+                    onClick={() => {
+                      setSelectedBill(scannedFileRecord);
+                      setSearchQuery(scannedFileRecord.cfo_diary_number || scannedFileRecord.receiving_number);
+                      setActiveTab("track");
+                      setIsScannedFileModalOpen(false);
+                    }}
+                  >
+                    <FileSearch className="w-4 h-4" />
+                    <span>Open in Track Tab</span>
+                  </Button>
+                </div>
+
+                <Button
+                  className="bg-slate-800 hover:bg-slate-900 text-white font-bold px-6"
+                  onClick={() => setIsScannedFileModalOpen(false)}
+                >
+                  Close
+                </Button>
+              </div>
             </div>
           )}
         </DialogContent>

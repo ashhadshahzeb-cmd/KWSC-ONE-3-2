@@ -81,11 +81,65 @@ export interface ActivityFilters {
   search?: string;
   page?: number;
   pageSize?: number;
+  after5PM?: boolean;
 }
 
 export interface ActivityFetchResult {
   data: ActivityLogEntry[];
   total: number;
+}
+
+export interface After5PMLoginUser {
+  user_name: string;
+  user_role: string;
+  login_time: string;
+  ip?: string;
+}
+
+export function isTimestampAfter5PMPKT(isoString: string): boolean {
+  if (!isoString) return false;
+  const d = new Date(isoString);
+  const pkt = new Date(d.getTime() + 5 * 60 * 60 * 1000);
+  const hour = pkt.getUTCHours();
+  // 5 PM (17:00) onwards, or night/early morning off-hours (00:00 - 08:59)
+  return hour >= 17 || hour < 9;
+}
+
+export async function fetchAfter5PMLogins(dateStr?: string): Promise<After5PMLoginUser[]> {
+  try {
+    let query = supabase
+      .from('activity_log' as any)
+      .select('user_name, user_role, created_at, details')
+      .eq('action', 'LOGIN')
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (dateStr) {
+      query = query.gte('created_at', `${dateStr}T00:00:00`).lte('created_at', `${dateStr}T23:59:59`);
+    } else {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      query = query.gte('created_at', sevenDaysAgo);
+    }
+
+    const { data, error } = await query;
+    if (error || !data) return [];
+
+    const result: After5PMLoginUser[] = [];
+    for (const row of data as any[]) {
+      if (isTimestampAfter5PMPKT(row.created_at)) {
+        result.push({
+          user_name: row.user_name,
+          user_role: row.user_role,
+          login_time: row.created_at,
+          ip: row.details?.ip,
+        });
+      }
+    }
+    return result;
+  } catch (err) {
+    console.error('[ActivityLog] Error fetching after 5 PM logins:', err);
+    return [];
+  }
 }
 
 export async function fetchActivityLogs(filters: ActivityFilters = {}): Promise<ActivityFetchResult> {
@@ -97,8 +151,7 @@ export async function fetchActivityLogs(filters: ActivityFilters = {}): Promise<
   let query = supabase
     .from('activity_log' as any)
     .select('*', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(from, to);
+    .order('created_at', { ascending: false });
 
   if (filters.userRole && filters.userRole !== 'all') {
     query = query.eq('user_role', filters.userRole);
@@ -118,6 +171,30 @@ export async function fetchActivityLogs(filters: ActivityFilters = {}): Promise<
     );
   }
 
+  if (filters.after5PM) {
+    query = query.limit(3000);
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('[ActivityLog] Fetch error:', error);
+      return { data: [], total: 0 };
+    }
+
+    const filtered = ((data || []) as ActivityLogEntry[]).filter(entry => 
+      isTimestampAfter5PMPKT(entry.created_at)
+    );
+
+    const total = filtered.length;
+    const sliceFrom = page * pageSize;
+    const sliceTo = sliceFrom + pageSize;
+
+    return {
+      data: filtered.slice(sliceFrom, sliceTo),
+      total,
+    };
+  }
+
+  query = query.range(from, to);
   const { data, count, error } = await query;
 
   if (error) {

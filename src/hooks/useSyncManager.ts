@@ -72,8 +72,12 @@ export function useSyncManager() {
         }
 
         if (task.action === 'insert') {
-          const { id: _id, is_dirty, deleted_locally, additional_mark_to, department_number, fuel_station, ...payload } = payloadToUpload;
+          const { id: _id, is_dirty, deleted_locally, department_number, fuel_station, ...payload } = payloadToUpload;
           
+          if (!payload.tracking_id) {
+            payload.tracking_id = `FT-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
+          }
+
           if (payload.amount === "") payload.amount = null;
 
           // Ensure file_images is a valid array for JSONB column
@@ -85,16 +89,22 @@ export function useSyncManager() {
           // file_image: keep single string or null
           if (!payload.file_image) payload.file_image = null;
 
-          const { error } = await supabase
+          let { error } = await supabase
             .from('file_tracking_records' as any)
             .insert(payload);
+          if (error && (error.code === '42703' || error.message?.includes('does not exist'))) {
+            // Graceful fallback if sub_budget_head / ddo_code / parent_diary_number column doesn't exist in Supabase yet
+            const { sub_budget_head: _sbh, ddo_code: _ddo, parent_diary_number: _pdn, linked_file_id: _lfi, ...fallbackPayload } = payload;
+            const res = await supabase.from('file_tracking_records' as any).insert(fallbackPayload);
+            error = res.error;
+          }
           if (error) throw error;
 
           // 📊 Direct Browser -> Google Sheets Sync (all 30 fields, non-blocking)
           syncToGoogleSheetDirectly(payloadToUpload, 'INSERT').catch(() => {});
 
         } else if (task.action === 'update') {
-          const { id: _id, is_dirty, deleted_locally, additional_mark_to, department_number, fuel_station, ...payload } = payloadToUpload;
+          const { id: _id, is_dirty, deleted_locally, department_number, fuel_station, ...payload } = payloadToUpload;
           
           if (payload.amount === "") payload.amount = null;
 
@@ -104,10 +114,16 @@ export function useSyncManager() {
           }
           if (!payload.file_image) payload.file_image = null;
 
-          const { error } = await supabase
+          let { error } = await supabase
             .from('file_tracking_records' as any)
             .update(payload)
             .eq('receiving_number', task.record_id!);
+          if (error && (error.code === '42703' || error.message?.includes('does not exist'))) {
+            // Graceful fallback if sub_budget_head / ddo_code / parent_diary_number column doesn't exist in Supabase yet
+            const { sub_budget_head: _sbh, ddo_code: _ddo, parent_diary_number: _pdn, linked_file_id: _lfi, ...fallbackPayload } = payload;
+            const res = await supabase.from('file_tracking_records' as any).update(fallbackPayload).eq('receiving_number', task.record_id!);
+            error = res.error;
+          }
           if (error) throw error;
 
           // 📊 Direct Browser -> Google Sheets Sync (Merge with full local record so NO fields are missing)

@@ -32,8 +32,10 @@ import VendorCreation from "./pages/book-section/VendorCreation";
 import PolBills from "./pages/book-section/PolBills";
 import Contingencies from "./pages/book-section/Contingencies";
 import ChequeRecord from "./pages/book-section/ChequeRecord";
+import ChequePrinting from "./pages/book-section/ChequePrinting";
 import BillDispatch from "./pages/book-section/BillDispatch";
 import FileTracking from "./pages/book-section/FileTracking";
+import LinkedFileTracking from "./pages/book-section/LinkedFileTracking";
 import AskAI from "./pages/AskAI";
 import FileRecordDetail from "./pages/book-section/FileRecordDetail";
 import TransferAdvice from "./pages/book-section/TransferAdvice";
@@ -133,22 +135,37 @@ const App = () => {
             <VoiceProvider>
               <BrowserRouter>
               <Routes>
-                <Route path="/" element={Capacitor.isNativePlatform() ? <MobileDashboard /> : <LandingPage />} />
+
+                <Route path="/" element={Capacitor.isNativePlatform() ? <MobileDashboard /> : <Navigate to="/book-section/linked-file-tracking" replace />} />
+
                 <Route path="/demo" element={<DemoVideoPage />} />
+
                 <Route path="/login" element={Capacitor.isNativePlatform() ? <MobileAuth /> : <AuthPage />} />
+
                 <Route path="/track" element={<TrackingPortal />} />
+
                 <Route path="/public-track/:diaryNo/*" element={<PublicTracking />} />
+
                 <Route path="/mobile-upload/:sessionId" element={<MobileUpload />} />
+
                 <Route path="/mobile-app" element={<MobileDashboard />} />
+
                 <Route path="/profile" element={Capacitor.isNativePlatform() ? <ProtectedRoute><MobileProfile /></ProtectedRoute> : <ProtectedRoute><Profile /></ProtectedRoute>} />
 
                 {/* HRMS Routes Top-Level (Outside of Main Layout) */}
+
                 <Route path="/hrms/dashboard" element={<ProtectedRoute><HRMSLayout><HRMSDashboard /></HRMSLayout></ProtectedRoute>} />
+
                 <Route path="/hrms/employees" element={<ProtectedRoute><HRMSLayout><Employees /></HRMSLayout></ProtectedRoute>} />
+
                 <Route path="/hrms/attendance" element={<ProtectedRoute><HRMSLayout><Attendance /></HRMSLayout></ProtectedRoute>} />
+
                 <Route path="/hrms/leaves" element={<ProtectedRoute><HRMSLayout><LeaveManagement /></HRMSLayout></ProtectedRoute>} />
+
                 <Route path="/hrms/payroll" element={<ProtectedRoute><HRMSLayout><Payroll /></HRMSLayout></ProtectedRoute>} />
+
                 <Route path="/hrms/profile" element={<ProtectedRoute><HRMSLayout><HRMSProfile /></HRMSLayout></ProtectedRoute>} />
+
 
                 <Route
                   path="/*"
@@ -156,68 +173,126 @@ const App = () => {
                     <ProtectedRoute>
                       <MaintenanceGuard>
                         <Layout>
-                          <Routes>
-                          <Route path="/dashboard" element={
+          
+                <Routes>
+          
+                <Route path="/dashboard" element={
                             <ProtectedRoute>
                               <DashboardRedirect />
                             </ProtectedRoute>
                           } />
-                          <Route path="/profile" element={<Profile />} />
-                          <Route path="/chart-of-accounts" element={<ChartOfAccounts />} />
-                          <Route path="/general-ledger" element={<GeneralLedger />} />
-                          <Route path="/bank-accounts" element={<BankAccounts />} />
-                          <Route path="/transactions" element={<Transactions />} />
-                          <Route path="/bank-entries" element={<BankEntries />} />
-                          <Route path="/reports" element={<Reports />} />
-                          <Route path="/budget-control" element={<BudgetControl />} />
-                          <Route path="/budget-details/:sectionId" element={<BudgetDetails />} />
-                          <Route path="/book-section/regular-employee" element={<RegularEmployee />} />
-                          <Route path="/book-section/retired-employee" element={<RetiredEmployee />} />
-                          <Route path="/book-section/emp-details" element={<EmpDetails />} />
-                          <Route path="/book-section/all-employees" element={<AllEmployees />} />
-                          <Route path="/book-section/all-employees/:id" element={<AllEmployeeDetail />} />
-                          <Route path="/book-section/medical" element={<Medical />} />
-                          <Route path="/book-section/contractor" element={<Contractor />} />
-                          <Route path="/book-section/vendor-creation" element={<VendorCreation />} />
-                          <Route path="/book-section/security-deposit" element={<SecurityDeposit />} />
-                          <Route path="/book-section/pol-bills" element={<PolBills />} />
-                          <Route path="/book-section/contingencies" element={<Contingencies />} />
-                          <Route path="/book-section/bill-dispatch" element={<BillDispatch />} />
-                          <Route path="/book-section/file-tracking" element={<FileTracking />} />
-                          <Route path="/ask-ai" element={<AskAI />} />
-                          <Route path="/book-section/transfer-advice" element={<TransferAdvice />} />
-                          <Route path="/book-section/transfer-advice-records" element={<TransferAdviceRecords />} />
-                          <Route path="/book-section/file-record/:receivingNo" element={<FileRecordDetail />} />
-                          <Route path="/restricted" element={<RestrictedDashboard />} />
-                          <Route path="/collection-entry" element={<CollectionEntry />} />
-                          <Route path="/user-management" element={<UserManagement />} />
-                          <Route path="/admin-config" element={<AdminConfig />} />
-                          <Route path="/activity-log" element={<ActivityLog />} />
-                          <Route path="/file-analytics" element={<FileAnalytics />} />
-                          <Route path="/messages" element={<Messages />} />
-                          <Route path="/notice-board" element={<NoticeBoard />} />
-                          <Route path="/book-section/cheque-record" element={<ChequeRecord />} />
-                          <Route path="/book-section/books" element={<Books />} />
-                          <Route path="/book-section/establishment" element={<Establishment />} />
-                          <Route path="/revenue-collection" element={<RevenueCollection />} />
-                          <Route path="/public-tracking" element={<PublicTracking />} />
-                          <Route path="/regular-employee/cp-fund" element={<CpFund />} />
-                          <Route path="/regular-employee/supp-salary" element={<CpFund title="Supp Salary" />} />
-                          <Route path="/regular-employee/house-building" element={<CpFund title="House Building" />} />
-                          <Route path="/regular-employee/marriage-bike" element={<CpFund title="Marriage/Bike" />} />
-                          <Route path="/regular-employee/medical-case" element={<CpFund title="Medical Case" />} />
-                          <Route path="/regular-employee/over-time" element={<CpFund title="Over Time" />} />
-                          <Route path="/regular-employee/tada" element={<CpFund title="TADA" />} />
+          
+                <Route path="/profile" element={<Profile />} />
+          
+                <Route path="/chart-of-accounts" element={<ChartOfAccounts />} />
+          
+                <Route path="/general-ledger" element={<GeneralLedger />} />
+          
+                <Route path="/bank-accounts" element={<BankAccounts />} />
+          
+                <Route path="/transactions" element={<Transactions />} />
+          
+                <Route path="/bank-entries" element={<BankEntries />} />
+          
+                <Route path="/reports" element={<Reports />} />
+          
+                <Route path="/budget-control" element={<BudgetControl />} />
+          
+                <Route path="/budget-details/:sectionId" element={<BudgetDetails />} />
+          
+                <Route path="/book-section/regular-employee" element={<RegularEmployee />} />
+          
+                <Route path="/book-section/retired-employee" element={<RetiredEmployee />} />
+          
+                <Route path="/book-section/emp-details" element={<EmpDetails />} />
+          
+                <Route path="/book-section/all-employees" element={<AllEmployees />} />
+          
+                <Route path="/book-section/all-employees/:id" element={<AllEmployeeDetail />} />
+          
+                <Route path="/book-section/medical" element={<Medical />} />
+          
+                <Route path="/book-section/contractor" element={<Contractor />} />
+          
+                <Route path="/book-section/vendor-creation" element={<VendorCreation />} />
+          
+                <Route path="/book-section/security-deposit" element={<SecurityDeposit />} />
+          
+                <Route path="/book-section/pol-bills" element={<PolBills />} />
+          
+                <Route path="/book-section/contingencies" element={<Contingencies />} />
+          
+                <Route path="/book-section/bill-dispatch" element={<BillDispatch />} />
+          
+                <Route path="/book-section/file-tracking" element={<FileTracking />} />
+          <Route path="/book-section/linked-file-tracking" element={<LinkedFileTracking />} />
+          <Route path="/book-section/cheque-printing" element={<ChequePrinting />} />
+          
+                <Route path="/ask-ai" element={<AskAI />} />
+          
+                <Route path="/book-section/transfer-advice" element={<TransferAdvice />} />
+          
+                <Route path="/book-section/transfer-advice-records" element={<TransferAdviceRecords />} />
+          
+                <Route path="/book-section/file-record/:receivingNo" element={<FileRecordDetail />} />
+          
+                <Route path="/restricted" element={<RestrictedDashboard />} />
+          
+                <Route path="/collection-entry" element={<CollectionEntry />} />
+          
+                <Route path="/user-management" element={<UserManagement />} />
+          
+                <Route path="/admin-config" element={<AdminConfig />} />
+          
+                <Route path="/activity-log" element={<ActivityLog />} />
+          
+                <Route path="/file-analytics" element={<FileAnalytics />} />
+          
+                <Route path="/messages" element={<Messages />} />
+          
+                <Route path="/notice-board" element={<NoticeBoard />} />
+          
+                <Route path="/book-section/cheque-record" element={<ChequeRecord />} />
+          
+                <Route path="/book-section/books" element={<Books />} />
+          
+                <Route path="/book-section/establishment" element={<Establishment />} />
+          
+                <Route path="/revenue-collection" element={<RevenueCollection />} />
+          
+                <Route path="/public-tracking" element={<PublicTracking />} />
+          
+                <Route path="/regular-employee/cp-fund" element={<CpFund />} />
+          
+                <Route path="/regular-employee/supp-salary" element={<CpFund title="Supp Salary" />} />
+          
+                <Route path="/regular-employee/house-building" element={<CpFund title="House Building" />} />
+          
+                <Route path="/regular-employee/marriage-bike" element={<CpFund title="Marriage/Bike" />} />
+          
+                <Route path="/regular-employee/medical-case" element={<CpFund title="Medical Case" />} />
+          
+                <Route path="/regular-employee/over-time" element={<CpFund title="Over Time" />} />
+          
+                <Route path="/regular-employee/tada" element={<CpFund title="TADA" />} />
 
-                          <Route path="/retired-employee/fund" element={<CpFund title="Fund" />} />
-                          <Route path="/retired-employee/lpr" element={<CpFund title="LPR" />} />
-                          <Route path="/retired-employee/pension-gratuity" element={<CpFund title="Pension/Gratuity" />} />
-                          <Route path="/retired-employee/pension-arrear" element={<CpFund title="Pension Arrear" />} />
-                          <Route path="/retired-employee/financial-assist" element={<CpFund title="Financial Assist" />} />
-                          <Route path="/retired-employee/funeral-charges" element={<CpFund title="Funeral Charges" />} />
-                          <Route path="/retired-employee/group-insurance" element={<CpFund title="Group Insurance" />} />
+          
+                <Route path="/retired-employee/fund" element={<CpFund title="Fund" />} />
+          
+                <Route path="/retired-employee/lpr" element={<CpFund title="LPR" />} />
+          
+                <Route path="/retired-employee/pension-gratuity" element={<CpFund title="Pension/Gratuity" />} />
+          
+                <Route path="/retired-employee/pension-arrear" element={<CpFund title="Pension Arrear" />} />
+          
+                <Route path="/retired-employee/financial-assist" element={<CpFund title="Financial Assist" />} />
+          
+                <Route path="/retired-employee/funeral-charges" element={<CpFund title="Funeral Charges" />} />
+          
+                <Route path="/retired-employee/group-insurance" element={<CpFund title="Group Insurance" />} />
 
-                          {/* Main Routes */}                <Route path="*" element={<NotFound />} />
+                          {/* Main Routes */}
+                <Route path="*" element={<NotFound />} />
                         </Routes>
                       </Layout>
                     </MaintenanceGuard>
@@ -235,3 +310,4 @@ const App = () => {
 };
 
 export default App;
+
